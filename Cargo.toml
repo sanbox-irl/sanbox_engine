@@ -6,7 +6,7 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
-default = ["metal"]
+default = ["vulkan"]
 metal = ["gfx-backend-metal"]
 dx12 = ["gfx-backend-dx12"]
 vulkan = ["gfx-backend-vulkan"]
@@ -17,6 +17,7 @@ log = "0.4.8"
 gfx-hal = "0.3.0"
 arrayvec = "0.4.11"
 simple_logger = "1.3.0"
+shaderc = "0.6.1"
 
 [dependencies.gfx-backend-vulkan]
 version = "0.3"

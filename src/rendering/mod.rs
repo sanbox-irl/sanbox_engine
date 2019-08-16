@@ -1,12 +1,23 @@
+macro_rules! manual_drop {
+    ($this_val:expr) => {
+        ManuallyDrop::into_inner(read(&$this_val))
+    };
+}
 
-mod renderer;
-mod winit_state_user_input;
+macro_rules! manual_new {
+    ($this_val:ident) => {
+        ManuallyDrop::new($this_val)
+    };
+}
+
 mod buffer_bundle;
 mod loaded_image;
 mod primitives;
+mod renderer;
+mod winit_state_user_input;
 
-pub use renderer::Renderer;
 pub use buffer_bundle::BufferBundle;
-pub use winit_state_user_input::{UserInput, WinitState};
 pub use loaded_image::LoadedImage;
-pub use primitives::Quad;
+pub use primitives::{Coord, Quad};
+pub use renderer::TypedRenderer;
+pub use winit_state_user_input::{UserInput, WinitState};

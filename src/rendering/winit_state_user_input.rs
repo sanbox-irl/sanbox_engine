@@ -1,15 +1,20 @@
+use super::Coord;
 use winit::{dpi::LogicalSize, *};
+
 
 pub struct WinitState {
     pub events_loop: EventsLoop,
     pub window: Window,
 }
 impl WinitState {
-    pub fn new<T: Into<String>>(title: T, size: LogicalSize) -> Result<Self, CreationError> {
+    pub fn new<T: Into<String>>(title: T, coord: Coord) -> Result<Self, CreationError> {
         let events_loop = EventsLoop::new();
         let output = WindowBuilder::new()
             .with_title(title)
-            .with_dimensions(size)
+            .with_dimensions(LogicalSize {
+                width: coord.x,
+                height: coord.y,
+            })
             .build(&events_loop);
 
         output.map(|window| Self {

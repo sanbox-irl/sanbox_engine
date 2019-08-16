@@ -8,20 +8,21 @@ extern crate image;
 
 mod rendering;
 
-use winit::dpi::LogicalSize;
-use rendering::{Renderer, UserInput, WinitState, Quad};
 use gfx_hal::window::Suboptimal;
+use rendering::{Coord, Quad, TypedRenderer, UserInput, WinitState};
 
 const WINDOW_NAME: &str = "Hello World!";
+const WINDOW_SIZE: Coord = Coord {
+    x: 1920.0,
+    y: 1080.0,
+};
 
 fn main() {
     env_logger::init();
-
-    let logical_size = LogicalSize::new(1920.0, 1080.0);
     let mut window_state =
-        WinitState::new(WINDOW_NAME, logical_size).expect("Error on windows creation.");
-    let mut hal_state = Renderer::new(&window_state.window, WINDOW_NAME).unwrap();
-    let mut local_state = LocalState::new(logical_size);
+        WinitState::new(WINDOW_NAME, WINDOW_SIZE).expect("Error on windows creation.");
+    let mut hal_state = TypedRenderer::typed_new(&window_state.window, WINDOW_NAME).unwrap();
+    let mut local_state = LocalState::new(WINDOW_SIZE);
 
     loop {
         let inputs = UserInput::poll_events_loop(&mut window_state.events_loop);
@@ -32,7 +33,7 @@ fn main() {
             debug!("Window changed size, restarting Renderer...");
             drop(hal_state);
 
-            hal_state = Renderer::new(&window_state.window, WINDOW_NAME).unwrap();
+            hal_state = TypedRenderer::typed_new(&window_state.window, WINDOW_NAME).unwrap();
         }
 
         local_state.update_from_input(inputs);
@@ -40,13 +41,13 @@ fn main() {
             error!("Rendering Error: {:?}", e);
             debug!("Auto-restarting Renderer...");
             drop(hal_state);
-            hal_state = Renderer::new(&window_state.window, WINDOW_NAME).unwrap();
+            hal_state = TypedRenderer::typed_new(&window_state.window, WINDOW_NAME).unwrap();
         }
     }
 }
 
 pub fn do_the_render(
-    hal_state: &mut Renderer,
+    hal_state: &mut TypedRenderer,
     local_state: &LocalState,
 ) -> Result<Option<Suboptimal>, &'static str> {
     let x1 = 100.0;
@@ -68,10 +69,10 @@ pub struct LocalState {
     pub mouse_y: f64,
 }
 impl LocalState {
-    pub fn new(logical_size: LogicalSize) -> LocalState {
+    pub fn new(coord: Coord) -> LocalState {
         LocalState {
-            frame_height: logical_size.height,
-            frame_width: logical_size.width,
+            frame_width: coord.x,
+            frame_height: coord.y,
             mouse_x: 0.0,
             mouse_y: 0.0,
         }

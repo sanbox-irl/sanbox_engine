@@ -8,12 +8,6 @@ use gfx_hal::{
 };
 use std::marker::PhantomData;
 
-macro_rules! manual_new {
-    ($this_val:ident) => {
-        ManuallyDrop::new($this_val)
-    };
-}
-
 pub struct BufferBundle<B: Backend> {
     pub buffer: ManuallyDrop<B::Buffer>,
     pub requirements: Requirements,

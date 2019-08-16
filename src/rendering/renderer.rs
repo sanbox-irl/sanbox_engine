@@ -1,3 +1,5 @@
+use arrayvec::ArrayVec;
+use core::mem::ManuallyDrop;
 use gfx_hal::{
     adapter::{Adapter, PhysicalDevice},
     buffer::{self, IndexBufferView},
@@ -17,16 +19,11 @@ use gfx_hal::{
     },
     queue::{family::QueueGroup, Submission},
     window::{Extent2D, PresentMode, Suboptimal, Surface, Swapchain, SwapchainConfig},
-    Backend, DescriptorPool, Features, Gpu, Graphics, IndexType,
-    Instance, Primitive, QueueFamily,
+    Backend, DescriptorPool, Features, Gpu, Graphics, IndexType, Instance, Primitive, QueueFamily,
 };
 use std::{borrow::Cow, mem::size_of, ops::Deref, time::Instant};
 use winit::Window;
 
-use super::{BufferBundle, LoadedImage, Quad};
-
-use arrayvec::ArrayVec;
-use core::mem::ManuallyDrop;
 #[cfg(feature = "dx12")]
 use gfx_backend_dx12 as back;
 #[cfg(feature = "metal")]
@@ -34,69 +31,71 @@ use gfx_backend_metal as back;
 #[cfg(feature = "vulkan")]
 use gfx_backend_vulkan as back;
 
+use super::{BufferBundle, LoadedImage, Quad};
+
 pub const VERTEX_SOURCE: &str = include_str!("shaders/vert_default.vert");
 pub const FRAGMENT_SOURCE: &str = include_str!("shaders/frag_default.frag");
-pub const ZELDA: &[u8] = include_bytes!("../img/test_png.png");
+pub const ZELDA: &[u8] = include_bytes!("../../resources/sprites/zelda.png");
 
-macro_rules! manual_drop {
-    ($this_val:expr) => {
-        ManuallyDrop::into_inner(read(&$this_val))
-    };
-}
-
-macro_rules! manual_new {
-    ($this_val:ident) => {
-        ManuallyDrop::new($this_val)
-    };
-}
-
-pub struct Renderer {
+pub struct Renderer<I: Instance> {
     // Top
-    _instance: ManuallyDrop<back::Instance>,
-    _surface: <back::Backend as Backend>::Surface,
-    _adapter: Adapter<back::Backend>,
-    queue_group: ManuallyDrop<QueueGroup<back::Backend, Graphics>>,
-    device: ManuallyDrop<back::Device>,
+    _instance: ManuallyDrop<I>,
+    _surface: <I::Backend as Backend>::Surface,
+    _adapter: Adapter<I::Backend>,
+    queue_group: ManuallyDrop<QueueGroup<I::Backend, Graphics>>,
+    device: ManuallyDrop<<I::Backend as Backend>::Device>,
 
     // Pipeline nonsense
-    vertices: BufferBundle<back::Backend>,
-    indexes: BufferBundle<back::Backend>,
-    descriptor_set_layouts: Vec<<back::Backend as Backend>::DescriptorSetLayout>,
-    descriptor_set: ManuallyDrop<<back::Backend as Backend>::DescriptorSet>,
-    descriptor_pool: ManuallyDrop<<back::Backend as Backend>::DescriptorPool>,
-    pipeline_layout: ManuallyDrop<<back::Backend as Backend>::PipelineLayout>,
-    graphics_pipeline: ManuallyDrop<<back::Backend as Backend>::GraphicsPipeline>,
+    vertices: BufferBundle<I::Backend>,
+    indexes: BufferBundle<I::Backend>,
+    descriptor_set_layouts: Vec<<I::Backend as Backend>::DescriptorSetLayout>,
+    descriptor_set: ManuallyDrop<<I::Backend as Backend>::DescriptorSet>,
+    descriptor_pool: ManuallyDrop<<I::Backend as Backend>::DescriptorPool>,
+    pipeline_layout: ManuallyDrop<<I::Backend as Backend>::PipelineLayout>,
+    graphics_pipeline: ManuallyDrop<<I::Backend as Backend>::GraphicsPipeline>,
 
     // GPU Swapchain
-    texture: LoadedImage<back::Backend>,
-    swapchain: ManuallyDrop<<back::Backend as Backend>::Swapchain>,
+    texture: LoadedImage<I::Backend>,
+    swapchain: ManuallyDrop<<I::Backend as Backend>::Swapchain>,
     render_area: Rect,
-    in_flight_fences: Vec<<back::Backend as Backend>::Fence>,
+    in_flight_fences: Vec<<I::Backend as Backend>::Fence>,
     frames_in_flight: usize,
-    image_available_semaphores: Vec<<back::Backend as Backend>::Semaphore>,
-    render_finished_semaphores: Vec<<back::Backend as Backend>::Semaphore>,
+    image_available_semaphores: Vec<<I::Backend as Backend>::Semaphore>,
+    render_finished_semaphores: Vec<<I::Backend as Backend>::Semaphore>,
 
     // Render Pass
-    render_pass: ManuallyDrop<<back::Backend as Backend>::RenderPass>,
+    render_pass: ManuallyDrop<<I::Backend as Backend>::RenderPass>,
 
     // Render Targets
-    image_views: Vec<(<back::Backend as Backend>::ImageView)>,
-    framebuffers: Vec<<back::Backend as Backend>::Framebuffer>,
+    image_views: Vec<(<I::Backend as Backend>::ImageView)>,
+    framebuffers: Vec<<I::Backend as Backend>::Framebuffer>,
 
     // Command Issues
-    command_pool: ManuallyDrop<CommandPool<back::Backend, Graphics>>,
-    command_buffers: Vec<CommandBuffer<back::Backend, Graphics, MultiShot, Primary>>,
+    command_pool: ManuallyDrop<CommandPool<I::Backend, Graphics>>,
+    command_buffers: Vec<CommandBuffer<I::Backend, Graphics, MultiShot, Primary>>,
 
     // Mis
     current_frame: usize,
     creation_time: Instant,
 }
 
-impl Renderer {
-    pub fn new(window: &Window, window_name: &str) -> Result<Self, &'static str> {
-        let instance = back::Instance::create(window_name, 1);
-        let mut surface = instance.create_surface(window);
 
+pub type TypedRenderer = Renderer<back::Instance>;
+impl<I: Instance> Renderer<I> {
+    pub fn typed_new(window: &Window, window_name: &str) -> Result<TypedRenderer, &'static str> {
+        // Create An Instance
+        let instance = back::Instance::create(window_name, 1);
+        // Create A Surface
+        let surface = instance.create_surface(window);
+        // Create A HalState
+        TypedRenderer::new(window, instance, surface)
+    }
+
+    pub fn new(
+        window: &Window,
+        instance: I,
+        mut surface: <I::Backend as Backend>::Surface,
+    ) -> Result<Self, &'static str> {
         let creation_time = Instant::now();
 
         let adapter = instance
@@ -226,9 +225,9 @@ impl Renderer {
         };
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) = {
-            let mut image_available_semaphores: Vec<<back::Backend as Backend>::Semaphore> = vec![];
-            let mut render_finished_semaphores: Vec<<back::Backend as Backend>::Semaphore> = vec![];
-            let mut in_flight_fences: Vec<<back::Backend as Backend>::Fence> = vec![];
+            let mut image_available_semaphores = vec![];
+            let mut render_finished_semaphores = vec![];
+            let mut in_flight_fences = vec![];
             for _ in 0..frames_in_flight {
                 in_flight_fences.push(
                     device
@@ -301,7 +300,7 @@ impl Renderer {
                 .collect::<Result<Vec<_>, &str>>()?
         };
 
-        let framebuffers: Vec<<back::Backend as Backend>::Framebuffer> = {
+        let framebuffers = {
             image_views
                 .iter()
                 .map(|image_view| unsafe {
@@ -361,7 +360,7 @@ impl Renderer {
         }
 
         // Create the texture
-        let texture = LoadedImage::new(
+        let texture: LoadedImage<I::Backend> = LoadedImage::new(
             &adapter,
             &device,
             &mut command_pool,
@@ -424,16 +423,16 @@ impl Renderer {
     }
 
     fn create_pipeline(
-        device: &mut back::Device,
+        device: &mut <I::Backend as Backend>::Device,
         extent: Extent2D,
-        render_pass: &<back::Backend as Backend>::RenderPass,
+        render_pass: &<I::Backend as Backend>::RenderPass,
     ) -> Result<
         (
-            Vec<<back::Backend as Backend>::DescriptorSetLayout>,
-            <back::Backend as Backend>::DescriptorPool,
-            <back::Backend as Backend>::DescriptorSet,
-            <back::Backend as Backend>::PipelineLayout,
-            <back::Backend as Backend>::GraphicsPipeline,
+            Vec<<I::Backend as Backend>::DescriptorSetLayout>,
+            <I::Backend as Backend>::DescriptorPool,
+            <I::Backend as Backend>::DescriptorSet,
+            <I::Backend as Backend>::PipelineLayout,
+            <I::Backend as Backend>::GraphicsPipeline,
         ),
         &'static str,
     > {
@@ -851,7 +850,7 @@ impl Renderer {
     }
 }
 
-impl core::ops::Drop for Renderer {
+impl<I: Instance> core::ops::Drop for Renderer<I> {
     fn drop(&mut self) {
         error!("Dropping HALState.");
         self.device.wait_idle().unwrap();

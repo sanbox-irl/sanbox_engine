@@ -14,19 +14,6 @@ use image::RgbaImage;
 use std::{marker::PhantomData, mem::size_of};
 use super::BufferBundle;
 
-macro_rules! manual_drop {
-    ($this_val:expr) => {
-        ManuallyDrop::into_inner(read(&$this_val))
-    };
-}
-
-macro_rules! manual_new {
-    ($this_val:ident) => {
-        ManuallyDrop::new($this_val)
-    };
-}
-
-
 pub struct LoadedImage<B: Backend> {
     pub image: ManuallyDrop<B::Image>,
     pub requirements: Requirements,

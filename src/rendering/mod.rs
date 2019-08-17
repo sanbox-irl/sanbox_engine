@@ -15,9 +15,11 @@ mod loaded_image;
 mod primitives;
 mod renderer;
 mod winit_state_user_input;
+mod sprite;
 
 pub use buffer_bundle::BufferBundle;
 pub use loaded_image::LoadedImage;
 pub use primitives::{Coord, Quad};
 pub use renderer::TypedRenderer;
 pub use winit_state_user_input::{UserInput, WinitState};
+pub use sprite::*;

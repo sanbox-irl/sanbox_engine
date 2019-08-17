@@ -1,18 +1,19 @@
+use super::BufferBundle;
 use core::mem::ManuallyDrop;
 use gfx_hal::{
     adapter::{Adapter, MemoryTypeId, PhysicalDevice},
     buffer,
     device::Device,
     format::{Aspects, Format},
-    image::{Layout, Usage, SubresourceRange},
+    image::{Layout, SubresourceRange, Usage},
     memory::{Properties, Requirements},
     pool::CommandPool,
     pso::PipelineStage,
+    pso::{Descriptor, DescriptorSetWrite},
     Backend, Capability, CommandQueue, Supports, Transfer,
 };
 use image::RgbaImage;
-use std::{marker::PhantomData, mem::size_of};
-use super::BufferBundle;
+use std::{marker::PhantomData, mem::size_of, ops::Deref};
 
 pub struct LoadedImage<B: Backend> {
     pub image: ManuallyDrop<B::Image>,
@@ -20,6 +21,7 @@ pub struct LoadedImage<B: Backend> {
     pub memory: ManuallyDrop<B::Memory>,
     pub image_view: ManuallyDrop<B::ImageView>,
     pub sampler: ManuallyDrop<B::Sampler>,
+    pub descriptor_set: ManuallyDrop<B::DescriptorSet>,
     pub phantom: PhantomData<B::Device>,
 }
 
@@ -30,6 +32,7 @@ impl<B: Backend> LoadedImage<B> {
         command_pool: &mut CommandPool<B, C>,
         command_queue: &mut CommandQueue<B, C>,
         img: RgbaImage,
+        descriptor_set: B::DescriptorSet,
     ) -> Result<Self, &'static str> {
         unsafe {
             // 0.   First we compute some memory related values:
@@ -212,14 +215,36 @@ impl<B: Backend> LoadedImage<B> {
             staging_bundle.manually_drop(device);
             command_pool.free(Some(cmd_buffer));
 
-            Ok(Self {
+            let texture = Self {
                 image: manual_new!(image_object),
                 requirements,
                 memory: manual_new!(memory),
                 image_view: manual_new!(image_view),
                 sampler: manual_new!(sampler),
+                descriptor_set: manual_new!(descriptor_set),
                 phantom: PhantomData,
-            })
+            };
+
+            // Write that fucker: Write the descriptors into the descriptor set
+            device.write_descriptor_sets(vec![
+                DescriptorSetWrite {
+                    set: texture.descriptor_set.deref(),
+                    binding: 0,
+                    array_offset: 0,
+                    descriptors: Some(Descriptor::Image(
+                        texture.image_view.deref(),
+                        Layout::ShaderReadOnlyOptimal,
+                    )),
+                },
+                DescriptorSetWrite {
+                    set: texture.descriptor_set.deref(),
+                    binding: 1,
+                    array_offset: 0,
+                    descriptors: Some(Descriptor::Sampler(texture.sampler.deref())),
+                },
+            ]);
+
+            Ok(texture)
         }
     }
 

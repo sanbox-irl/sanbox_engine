@@ -31,7 +31,7 @@ use gfx_backend_metal as back;
 #[cfg(feature = "vulkan")]
 use gfx_backend_vulkan as back;
 
-use super::{BufferBundle, LoadedImage, Quad};
+use super::{BufferBundle, LoadedImage, Quad, Sprite, SpriteName};
 
 pub const VERTEX_SOURCE: &str = include_str!("shaders/vert_default.vert");
 pub const FRAGMENT_SOURCE: &str = include_str!("shaders/frag_default.frag");
@@ -49,13 +49,12 @@ pub struct Renderer<I: Instance> {
     vertices: BufferBundle<I::Backend>,
     indexes: BufferBundle<I::Backend>,
     descriptor_set_layouts: Vec<<I::Backend as Backend>::DescriptorSetLayout>,
-    descriptor_set: ManuallyDrop<<I::Backend as Backend>::DescriptorSet>,
     descriptor_pool: ManuallyDrop<<I::Backend as Backend>::DescriptorPool>,
     pipeline_layout: ManuallyDrop<<I::Backend as Backend>::PipelineLayout>,
     graphics_pipeline: ManuallyDrop<<I::Backend as Backend>::GraphicsPipeline>,
 
     // GPU Swapchain
-    texture: LoadedImage<I::Backend>,
+    textures: Vec<LoadedImage<I::Backend>>,
     swapchain: ManuallyDrop<<I::Backend as Backend>::Swapchain>,
     render_area: Rect,
     in_flight_fences: Vec<<I::Backend as Backend>::Fence>,
@@ -79,16 +78,22 @@ pub struct Renderer<I: Instance> {
     creation_time: Instant,
 }
 
-
 pub type TypedRenderer = Renderer<back::Instance>;
 impl<I: Instance> Renderer<I> {
-    pub fn typed_new(window: &Window, window_name: &str) -> Result<TypedRenderer, &'static str> {
+    pub fn typed_new(
+        window: &Window,
+        window_name: &str,
+        sprite_info: &'static [(SpriteName, &[u8])],
+    ) -> Result<(TypedRenderer, Vec<Sprite>), &'static str> {
         // Create An Instance
         let instance = back::Instance::create(window_name, 1);
         // Create A Surface
         let surface = instance.create_surface(window);
         // Create A HalState
-        TypedRenderer::new(window, instance, surface)
+        let mut tr = TypedRenderer::new(window, instance, surface)?;
+        let sprites = tr.record_textures(sprite_info)?;
+
+        Ok((tr, sprites))
     }
 
     pub fn new(
@@ -333,7 +338,6 @@ impl<I: Instance> Renderer<I> {
         let (
             descriptor_set_layouts,
             descriptor_pool,
-            descriptor_set,
             pipeline_layout,
             graphics_pipeline,
         ) = Self::create_pipeline(&mut device, extent, &render_pass)?;
@@ -359,38 +363,6 @@ impl<I: Instance> Renderer<I> {
                 .map_err(|_| "Couldn't release the index buffer mapping writer!")?;
         }
 
-        // Create the texture
-        let texture: LoadedImage<I::Backend> = LoadedImage::new(
-            &adapter,
-            &device,
-            &mut command_pool,
-            &mut queue_group.queues[0],
-            image::load_from_memory(ZELDA)
-                .expect("Binary Corrupted!")
-                .to_rgba(),
-        )?;
-
-        // Write the descriptors into the descriptor set
-        unsafe {
-            device.write_descriptor_sets(vec![
-                DescriptorSetWrite {
-                    set: &descriptor_set,
-                    binding: 0,
-                    array_offset: 0,
-                    descriptors: Some(Descriptor::Image(
-                        texture.image_view.deref(),
-                        Layout::ShaderReadOnlyOptimal,
-                    )),
-                },
-                DescriptorSetWrite {
-                    set: &descriptor_set,
-                    binding: 1,
-                    array_offset: 0,
-                    descriptors: Some(Descriptor::Sampler(texture.sampler.deref())),
-                },
-            ]);
-        }
-
         Ok(Self {
             _instance: manual_new!(instance),
             _surface: surface,
@@ -412,10 +384,9 @@ impl<I: Instance> Renderer<I> {
 
             vertices,
             indexes,
-            texture,
+            textures: vec![],
             descriptor_set_layouts,
             descriptor_pool: manual_new!(descriptor_pool),
-            descriptor_set: manual_new!(descriptor_set),
             pipeline_layout: manual_new!(pipeline_layout),
             graphics_pipeline: manual_new!(graphics_pipeline),
             creation_time,
@@ -430,7 +401,6 @@ impl<I: Instance> Renderer<I> {
         (
             Vec<<I::Backend as Backend>::DescriptorSetLayout>,
             <I::Backend as Backend>::DescriptorPool,
-            <I::Backend as Backend>::DescriptorSet,
             <I::Backend as Backend>::PipelineLayout,
             <I::Backend as Backend>::GraphicsPipeline,
         ),
@@ -610,30 +580,23 @@ impl<I: Instance> Renderer<I> {
                 .map_err(|_| "Couldn't make a DescriptorSetLayout!")?
         }];
 
-        let mut descriptor_pool = unsafe {
+        let descriptor_pool = unsafe {
             device
                 .create_descriptor_pool(
                     1,
                     &[
                         DescriptorRangeDesc {
                             ty: DescriptorType::SampledImage,
-                            count: 1,
+                            count: 2,
                         },
                         DescriptorRangeDesc {
                             ty: DescriptorType::Sampler,
-                            count: 1,
+                            count: 2,
                         },
                     ],
                     gfx_hal::pso::DescriptorPoolCreateFlags::empty(),
                 )
                 .map_err(|_| "Couldn't create a descriptor pool!")?
-        };
-
-        // 3. you allocate said descriptor set from the pool you made earlier
-        let descriptor_set = unsafe {
-            descriptor_pool
-                .allocate_set(&descriptor_set_layouts[0])
-                .map_err(|_| "Couldn't make a Descriptor Set!")?
         };
 
         let push_constants = vec![(ShaderStageFlags::FRAGMENT, 0..1)];
@@ -673,10 +636,46 @@ impl<I: Instance> Renderer<I> {
         Ok((
             descriptor_set_layouts,
             descriptor_pool,
-            descriptor_set,
             layout,
             gfx_pipeline,
         ))
+    }
+
+    fn record_textures<'a>(
+        &mut self,
+        sprite_info: &'static [(SpriteName, &'static [u8])],
+    ) -> Result<Vec<Sprite>, &'static str> {
+        let mut ret = vec![];
+        for (name, file) in sprite_info {
+            let texture = unsafe {
+                let descriptor_set = self
+                    .descriptor_pool
+                    .allocate_set(&self.descriptor_set_layouts[0])
+                    .map_err(|_| "Couldn't make a Descriptor Set!")?;
+
+                println!("Made one descriptor set!");
+
+                LoadedImage::new(
+                    &self._adapter,
+                    &*self.device,
+                    &mut self.command_pool,
+                    &mut self.queue_group.queues[0],
+                    image::load_from_memory(file)
+                        .expect("Binary Corrupted!")
+                        .to_rgba(),
+                    descriptor_set,
+                )?
+            };
+            let len = self.textures.len();
+            self.textures.push(texture);
+            ret.push(Sprite {
+                name,
+                file,
+                texture: len,
+            });
+        }
+
+        Ok(ret)
     }
 
     pub fn draw_clear_frame(
@@ -742,7 +741,7 @@ impl<I: Instance> Renderer<I> {
         }
     }
 
-    pub fn draw_quad_frame(&mut self, quad: Quad) -> Result<Option<Suboptimal>, &'static str> {
+    pub fn draw_quad_frame(&mut self, quad: Quad, sprite: &Sprite) -> Result<Option<Suboptimal>, &'static str> {
         // SETUP FOR THIS FRAME
         let image_available = &self.image_available_semaphores[self.current_frame];
         let render_finished = &self.render_finished_semaphores[self.current_frame];
@@ -813,7 +812,7 @@ impl<I: Instance> Renderer<I> {
                 encoder.bind_graphics_descriptor_sets(
                     &self.pipeline_layout,
                     0,
-                    Some(self.descriptor_set.deref()),
+                    Some(self.textures[sprite.texture].descriptor_set.deref()),
                     &[],
                 );
 
@@ -876,12 +875,14 @@ impl<I: Instance> core::ops::Drop for Renderer<I> {
             for this_layout in self.descriptor_set_layouts.drain(..) {
                 self.device.destroy_descriptor_set_layout(this_layout);
             }
+            for texture in self.textures.drain(..) {
+                texture.manually_drop(&self.device);
+            }
 
             // LAST RESORT STYLE CODE, NOT TO BE IMITATED LIGHTLY
             use core::ptr::read;
             self.vertices.manually_drop(&self.device);
             self.indexes.manually_drop(&self.device);
-            self.texture.manually_drop(&self.device);
 
             self.device
                 .destroy_pipeline_layout(manual_drop!(self.pipeline_layout));

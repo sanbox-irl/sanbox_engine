@@ -9,7 +9,7 @@ extern crate image;
 mod rendering;
 
 use gfx_hal::window::Suboptimal;
-use rendering::{Coord, Quad, TypedRenderer, UserInput, WinitState};
+use rendering::{Coord, Quad, TypedRenderer, UserInput, WinitState, SPRITE_LIST, Sprite};
 
 const WINDOW_NAME: &str = "Hello World!";
 const WINDOW_SIZE: Coord = Coord {
@@ -21,7 +21,7 @@ fn main() {
     env_logger::init();
     let mut window_state =
         WinitState::new(WINDOW_NAME, WINDOW_SIZE).expect("Error on windows creation.");
-    let mut hal_state = TypedRenderer::typed_new(&window_state.window, WINDOW_NAME).unwrap();
+    let (mut hal_state, mut sprites) = TypedRenderer::typed_new(&window_state.window, WINDOW_NAME, &SPRITE_LIST).unwrap();
     let mut local_state = LocalState::new(WINDOW_SIZE);
 
     loop {
@@ -33,15 +33,19 @@ fn main() {
             debug!("Window changed size, restarting Renderer...");
             drop(hal_state);
 
-            hal_state = TypedRenderer::typed_new(&window_state.window, WINDOW_NAME).unwrap();
+            let ret = TypedRenderer::typed_new(&window_state.window, WINDOW_NAME, &SPRITE_LIST).unwrap();
+            hal_state = ret.0;
+            sprites = ret.1;
         }
 
         local_state.update_from_input(inputs);
-        if let Err(e) = do_the_render(&mut hal_state, &local_state) {
+        if let Err(e) = do_the_render(&mut hal_state, &local_state, &sprites) {
             error!("Rendering Error: {:?}", e);
             debug!("Auto-restarting Renderer...");
             drop(hal_state);
-            hal_state = TypedRenderer::typed_new(&window_state.window, WINDOW_NAME).unwrap();
+            let ret = TypedRenderer::typed_new(&window_state.window, WINDOW_NAME, &SPRITE_LIST).unwrap();
+            hal_state = ret.0;
+            sprites = ret.1;
         }
     }
 }
@@ -49,6 +53,7 @@ fn main() {
 pub fn do_the_render(
     hal_state: &mut TypedRenderer,
     local_state: &LocalState,
+    sprites: &Vec<Sprite>
 ) -> Result<Option<Suboptimal>, &'static str> {
     let x1 = 100.0;
     let y1 = 100.0;
@@ -58,7 +63,7 @@ pub fn do_the_render(
         w: ((1280.0 - x1) / local_state.frame_width as f32) * 2.0,
         h: ((720.0 - y1) / local_state.frame_height as f32) * 2.0,
     };
-    hal_state.draw_quad_frame(quad)
+    hal_state.draw_quad_frame(quad, &sprites[0])
 }
 
 #[derive(Debug)]

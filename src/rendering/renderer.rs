@@ -22,7 +22,7 @@ use gfx_hal::{
     Backend, DescriptorPool, Features, Gpu, Graphics, IndexType, Instance, Primitive, QueueFamily,
 };
 use nalgebra_glm as glm;
-use std::{borrow::Cow, mem, ops::Deref, time::Instant};
+use std::{borrow::Cow, mem, ops::Deref};
 use winit::Window;
 
 #[cfg(feature = "dx12")]
@@ -76,8 +76,7 @@ pub struct Renderer<I: Instance> {
     command_buffers: Vec<CommandBuffer<I::Backend, Graphics, MultiShot, Primary>>,
 
     // Mis
-    current_frame: usize,
-    creation_time: Instant,
+    current_frame: usize
 }
 
 pub type TypedRenderer = Renderer<back::Instance>;
@@ -103,8 +102,6 @@ impl<I: Instance> Renderer<I> {
         instance: I,
         mut surface: <I::Backend as Backend>::Surface,
     ) -> Result<Self, &'static str> {
-        let creation_time = Instant::now();
-
         let adapter = instance
             .enumerate_adapters()
             .into_iter()
@@ -382,7 +379,6 @@ impl<I: Instance> Renderer<I> {
             descriptor_pool: manual_new!(descriptor_pool),
             pipeline_layout: manual_new!(pipeline_layout),
             graphics_pipeline: manual_new!(graphics_pipeline),
-            creation_time,
         })
     }
 

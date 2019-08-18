@@ -10,7 +10,7 @@ mod rendering;
 
 use gfx_hal::window::Suboptimal;
 use nalgebra_glm as glm;
-use rendering::{Coord, Quad, Sprite, TypedRenderer, UserInput, WinitState, SPRITE_LIST};
+use rendering::{Coord, Sprite, TypedRenderer, UserInput, WinitState, SPRITE_LIST};
 
 const WINDOW_NAME: &str = "Hello World!";
 const WINDOW_SIZE: Coord = Coord {

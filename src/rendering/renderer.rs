@@ -7,21 +7,22 @@ use gfx_hal::{
     device::Device,
     format::{Aspects, ChannelType, Format, Swizzle},
     image::{Extent, Layout, SubresourceRange, Usage, ViewKind},
+    memory::Pod,
     pass::{Attachment, AttachmentLoadOp, AttachmentOps, AttachmentStoreOp, Subpass, SubpassDesc},
     pool::{CommandPool, CommandPoolCreateFlags},
     pso::{
-        AttributeDesc, BakedStates, BasePipeline, BlendDesc, BlendOp, BlendState, ColorBlendDesc,
-        ColorMask, DepthStencilDesc, Descriptor, DescriptorRangeDesc, DescriptorSetLayoutBinding,
-        DescriptorSetWrite, DescriptorType, ElemOffset, ElemStride, Element, EntryPoint, Face,
-        Factor, FrontFace, GraphicsPipelineDesc, GraphicsShaderSet, InputAssemblerDesc, LogicOp,
-        PipelineCreationFlags, PipelineStage, PolygonMode, PrimitiveRestart, Rasterizer, Rect,
-        ShaderStageFlags, Specialization, VertexBufferDesc, VertexInputRate, Viewport,
+        BakedStates, BasePipeline, BlendDesc, BlendOp, BlendState, ColorBlendDesc, ColorMask,
+        DepthStencilDesc, DescriptorRangeDesc, DescriptorSetLayoutBinding, DescriptorType,
+        ElemStride, EntryPoint, Face, Factor, FrontFace, GraphicsPipelineDesc, GraphicsShaderSet,
+        InputAssemblerDesc, LogicOp, PipelineCreationFlags, PipelineStage, PolygonMode, Rasterizer,
+        Rect, ShaderStageFlags, Specialization, VertexBufferDesc, VertexInputRate, Viewport,
     },
     queue::{family::QueueGroup, Submission},
     window::{Extent2D, PresentMode, Suboptimal, Surface, Swapchain, SwapchainConfig},
     Backend, DescriptorPool, Features, Gpu, Graphics, IndexType, Instance, Primitive, QueueFamily,
 };
-use std::{borrow::Cow, mem::size_of, ops::Deref, time::Instant};
+use nalgebra_glm as glm;
+use std::{borrow::Cow, mem, ops::Deref, time::Instant};
 use winit::Window;
 
 #[cfg(feature = "dx12")]
@@ -31,11 +32,12 @@ use gfx_backend_metal as back;
 #[cfg(feature = "vulkan")]
 use gfx_backend_vulkan as back;
 
-use super::{BufferBundle, LoadedImage, Quad, Sprite, SpriteName};
+use super::{
+    BufferBundle, LoadedImage, Quad, Sprite, SpriteName, Vertex, QUAD_INDICES, QUAD_VERTICES,
+};
 
 pub const VERTEX_SOURCE: &str = include_str!("shaders/vert_default.vert");
 pub const FRAGMENT_SOURCE: &str = include_str!("shaders/frag_default.frag");
-pub const ZELDA: &[u8] = include_bytes!("../../resources/sprites/zelda.png");
 
 pub struct Renderer<I: Instance> {
     // Top
@@ -114,7 +116,7 @@ impl<I: Instance> Renderer<I> {
             .ok_or("Couldn't find a graphical adapter!")?;
 
         // open it up!
-        let (mut device, mut queue_group) = {
+        let (mut device, queue_group) = {
             let queue_family = adapter
                 .queue_families
                 .iter()
@@ -335,33 +337,24 @@ impl<I: Instance> Renderer<I> {
             .map(|_| command_pool.acquire_command_buffer())
             .collect();
 
-        let (
-            descriptor_set_layouts,
-            descriptor_pool,
-            pipeline_layout,
-            graphics_pipeline,
-        ) = Self::create_pipeline(&mut device, extent, &render_pass)?;
+        let (descriptor_set_layouts, descriptor_pool, pipeline_layout, graphics_pipeline) =
+            Self::create_pipeline(&mut device, extent, &render_pass)?;
 
-        const F32_XY_RGB_UV_QUAD: u64 = (size_of::<f32>() * 2 * 3) as u64;
-        let vertices =
-            BufferBundle::new(&adapter, &device, F32_XY_RGB_UV_QUAD, buffer::Usage::VERTEX)?;
+        let vertices = BufferBundle::new(
+            &adapter,
+            &device,
+            mem::size_of_val(&QUAD_VERTICES) as u64,
+            buffer::Usage::VERTEX,
+        )?;
+        Renderer::<I>::bind_to_memory(&mut device, &vertices, &QUAD_VERTICES)?;
 
-        const U16_QUAD_INDICES: u64 = (size_of::<u16>() * 2 * 3) as u64;
-        let indexes = BufferBundle::new(&adapter, &device, U16_QUAD_INDICES, buffer::Usage::INDEX)?;
-
-        // WRITE INDEX DATA
-        unsafe {
-            let mut data_target = device
-                .acquire_mapping_writer(&indexes.memory, 0..indexes.requirements.size)
-                .map_err(|_| "Failed to acquire an index buffer mapping writer!")?;
-
-            const INDEX_DATA: &[u16] = &[0, 1, 2, 2, 3, 0];
-            data_target[..INDEX_DATA.len()].copy_from_slice(&INDEX_DATA);
-
-            device
-                .release_mapping_writer(data_target)
-                .map_err(|_| "Couldn't release the index buffer mapping writer!")?;
-        }
+        let indexes = BufferBundle::new(
+            &adapter,
+            &device,
+            mem::size_of_val(&QUAD_INDICES) as u64,
+            buffer::Usage::INDEX,
+        )?;
+        Renderer::<I>::bind_to_memory(&mut device, &indexes, &QUAD_INDICES)?;
 
         Ok(Self {
             _instance: manual_new!(instance),
@@ -461,10 +454,7 @@ impl<I: Instance> Renderer<I> {
             },
         );
 
-        let input_assembler = InputAssemblerDesc {
-            primitive: Primitive::TriangleList,
-            primitive_restart: PrimitiveRestart::Disabled,
-        };
+        let input_assembler = InputAssemblerDesc::new(Primitive::TriangleList);
 
         let shaders = GraphicsShaderSet {
             vertex: vs_entry,
@@ -474,42 +464,13 @@ impl<I: Instance> Renderer<I> {
             hull: None,
         };
 
-        const VERTEX_STRIDE: ElemStride = (size_of::<f32>() * (2 + 3 + 2)) as ElemStride;
         let vertex_buffers = vec![VertexBufferDesc {
             binding: 0,
-            stride: VERTEX_STRIDE,
+            stride: mem::size_of::<Vertex>() as ElemStride,
             rate: VertexInputRate::Vertex,
         }];
 
-        let position_attribute = AttributeDesc {
-            location: 0,
-            binding: 0,
-            element: Element {
-                format: Format::Rg32Sfloat,
-                offset: 0,
-            },
-        };
-
-        let color_attribute = AttributeDesc {
-            location: 1,
-            binding: 0,
-            element: Element {
-                format: Format::Rgb32Sfloat,
-                offset: (size_of::<f32>() * 2) as ElemOffset,
-            },
-        };
-
-        const UV_STRIDE: ElemStride = (size_of::<f32>() * 5) as ElemStride;
-        let uv_attribute = AttributeDesc {
-            location: 2,
-            binding: 0,
-            element: Element {
-                format: Format::Rg32Sfloat,
-                offset: UV_STRIDE,
-            },
-        };
-
-        let attributes = vec![position_attribute, color_attribute, uv_attribute];
+        let attributes = Vertex::attributes();
 
         let rasterizer = Rasterizer {
             depth_clamping: false,
@@ -599,7 +560,7 @@ impl<I: Instance> Renderer<I> {
                 .map_err(|_| "Couldn't create a descriptor pool!")?
         };
 
-        let push_constants = vec![(ShaderStageFlags::FRAGMENT, 0..1)];
+        let push_constants = vec![(ShaderStageFlags::VERTEX, 0..16)];
         let layout = unsafe {
             device
                 .create_pipeline_layout(&descriptor_set_layouts, push_constants)
@@ -639,6 +600,26 @@ impl<I: Instance> Renderer<I> {
             layout,
             gfx_pipeline,
         ))
+    }
+
+    fn bind_to_memory<T: Copy>(
+        device: &mut <I::Backend as Backend>::Device,
+        buffer_bundle: &BufferBundle<I::Backend>,
+        data: &'static [T],
+    ) -> Result<(), &'static str> {
+        unsafe {
+            let mut data_target = device
+                .acquire_mapping_writer(&buffer_bundle.memory, 0..buffer_bundle.requirements.size)
+                .map_err(|_| "Failed to acquire an buffer mapping writer!")?;
+
+            data_target[..data.len()].copy_from_slice(&data);
+
+            device
+                .release_mapping_writer(data_target)
+                .map_err(|_| "Couldn't release the buffer mapping writer!")?;
+        };
+
+        Ok(())
     }
 
     fn record_textures<'a>(
@@ -741,7 +722,11 @@ impl<I: Instance> Renderer<I> {
         }
     }
 
-    pub fn draw_quad_frame(&mut self, quad: Quad, sprite: &Sprite) -> Result<Option<Suboptimal>, &'static str> {
+    pub fn draw_quad_frame(
+        &mut self,
+        models: &[glm::TMat4<f32>],
+        sprite: &[Sprite],
+    ) -> Result<Option<Suboptimal>, &'static str> {
         // SETUP FOR THIS FRAME
         let image_available = &self.image_available_semaphores[self.current_frame];
         let render_finished = &self.render_finished_semaphores[self.current_frame];
@@ -767,24 +752,19 @@ impl<I: Instance> Renderer<I> {
                 .map_err(|_| "Couldn't reset the fence!")?;
         }
 
-        // WRITE QUAD DATA
-        unsafe {
-            let mut data_target = self
-                .device
-                .acquire_mapping_writer(&self.vertices.memory, 0..self.vertices.requirements.size)
-                .map_err(|_| "Failed to acquire a memory writer!")?;
+        let view = glm::look_at_lh(
+            &glm::make_vec3(&[0.0, 0.0, -1.0]),
+            &glm::make_vec3(&[0.0, 0.0, 0.0]),
+            &glm::make_vec3(&[0.0, 1.0, 0.0]).normalize(),
+        );
 
-            let data = quad.vertex_attributes();
-            data_target[..data.len()].copy_from_slice(&data);
+        let projection = {
+            let mut temp = glm::ortho_lh_zo(-5.0, 5.0, -5.0, 5.0, 0.1, 100.0);
+            temp[(1, 1)] *= -1.0;
+            temp
+        };
 
-            self.device
-                .release_mapping_writer(data_target)
-                .map_err(|_| "Couldn't release the mapping writing!")?;
-        }
-
-        // DETERMINE THE TIME DATA
-        let duration = Instant::now().duration_since(self.creation_time);
-        let time_f32 = duration.as_secs() as f32 + duration.subsec_nanos() as f32 * 1e-9;
+        let view_projection = projection * view;
 
         // RECORD COMMANDS
         unsafe {
@@ -801,28 +781,32 @@ impl<I: Instance> Renderer<I> {
                 );
                 encoder.bind_graphics_pipeline(&self.graphics_pipeline);
 
-                let vertex_buffers: ArrayVec<[_; 1]> = [(self.vertices.buffer.deref(), 0)].into();
-                encoder.bind_vertex_buffers(0, vertex_buffers);
+                // Bind the vertex buffers in
+                encoder.bind_vertex_buffers(0, Some((self.vertices.buffer.deref(), 0)));
                 encoder.bind_index_buffer(IndexBufferView {
                     buffer: &self.indexes.buffer,
                     offset: 0,
                     index_type: IndexType::U16,
                 });
 
-                encoder.bind_graphics_descriptor_sets(
-                    &self.pipeline_layout,
-                    0,
-                    Some(self.textures[sprite.texture].descriptor_set.deref()),
-                    &[],
-                );
-
-                encoder.push_graphics_constants(
-                    &self.pipeline_layout,
-                    ShaderStageFlags::FRAGMENT,
-                    0,
-                    &[time_f32.to_bits()],
-                );
-                encoder.draw_indexed(0..6, 0, 0..1);
+                for (i, model) in models.iter().enumerate() {
+                    // write the textures...
+                    encoder.bind_graphics_descriptor_sets(
+                        &self.pipeline_layout,
+                        0,
+                        Some(self.textures[sprite[i].texture].descriptor_set.deref()),
+                        &[],
+                    );
+                    let mvp = view_projection * model;
+                    encoder.push_graphics_constants(
+                        &self.pipeline_layout,
+                        ShaderStageFlags::VERTEX,
+                        0,
+                        cast_slice::<f32, u32>(&mvp.data)
+                            .expect("this cast never fails for same-aligned same-size data"),
+                    );
+                    encoder.draw_indexed(0..6, 0, 0..1);
+                }
             }
             buffer.finish();
         }
@@ -898,6 +882,56 @@ impl<I: Instance> core::ops::Drop for Renderer<I> {
 
             ManuallyDrop::drop(&mut self.device);
             ManuallyDrop::drop(&mut self._instance);
+        }
+    }
+}
+
+pub fn cast_slice<T: Pod, U: Pod>(ts: &[T]) -> Option<&[U]> {
+    use core::mem::align_of;
+    // Handle ZST (this all const folds)
+    if mem::size_of::<T>() == 0 || mem::size_of::<U>() == 0 {
+        if mem::size_of::<T>() == mem::size_of::<U>() {
+            unsafe {
+                return Some(core::slice::from_raw_parts(
+                    ts.as_ptr() as *const U,
+                    ts.len(),
+                ));
+            }
+        } else {
+            return None;
+        }
+    }
+    // Handle alignments (this const folds)
+    if align_of::<U>() > align_of::<T>() {
+        // possible mis-alignment at the new type (this is a real runtime check)
+        if (ts.as_ptr() as usize) % align_of::<U>() != 0 {
+            return None;
+        }
+    }
+    if mem::size_of::<T>() == mem::size_of::<U>() {
+        // same size, so we direct cast, keeping the old length
+        unsafe {
+            Some(core::slice::from_raw_parts(
+                ts.as_ptr() as *const U,
+                ts.len(),
+            ))
+        }
+    } else {
+        // we might have slop, which would cause us to fail
+        let byte_size = mem::size_of::<T>() * ts.len();
+        let (new_count, new_overflow) = (
+            byte_size / mem::size_of::<U>(),
+            byte_size % mem::size_of::<U>(),
+        );
+        if new_overflow > 0 {
+            return None;
+        } else {
+            unsafe {
+                Some(core::slice::from_raw_parts(
+                    ts.as_ptr() as *const U,
+                    new_count,
+                ))
+            }
         }
     }
 }

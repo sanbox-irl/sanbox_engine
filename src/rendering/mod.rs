@@ -13,6 +13,7 @@ macro_rules! manual_new {
 mod buffer_bundle;
 mod loaded_image;
 mod primitives;
+mod vertex;
 mod renderer;
 mod winit_state_user_input;
 mod sprite;
@@ -23,3 +24,4 @@ pub use primitives::{Coord, Quad};
 pub use renderer::TypedRenderer;
 pub use winit_state_user_input::{UserInput, WinitState};
 pub use sprite::*;
+pub use vertex::*;

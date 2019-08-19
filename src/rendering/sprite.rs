@@ -1,6 +1,6 @@
 use super::Coord;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum SpriteName {
     Zelda,
     Link,
@@ -14,12 +14,12 @@ pub enum SpriteName {
 
 pub static SPRITE_LIST: [(SpriteName, &[u8]); 2] = [
     (
-        SpriteName::Zelda,
-        include_bytes!("../../resources/sprites/zelda.png"),
-    ),
-    (
         SpriteName::Link,
         include_bytes!("../../resources/sprites/link.png"),
+    ),
+    (
+        SpriteName::Zelda,
+        include_bytes!("../../resources/sprites/zelda.png"),
     ),
 ];
 
@@ -60,10 +60,17 @@ impl Sprite {
         );
     }
 
-    pub fn scale_by_sprite(&self, matrix: &glm::TMat4x4<f32>, origin: Origin) -> glm::TMat4x4<f32> {
+    pub fn scale_by_sprite(
+        &self,
+        matrix: &glm::TMat4x4<f32>,
+        _origin: Origin,
+    ) -> glm::TMat4x4<f32> {
         let scale = glm::make_vec3(&[self.internal_scaler.x, self.internal_scaler.y, 1.0]);
         let image_scaled = glm::scale(matrix, &scale);
-        origin.translate(&image_scaled)
+        image_scaled
+        // _origin.translate(&image_scaled)
+        // image_scaled
+        //
     }
 }
 

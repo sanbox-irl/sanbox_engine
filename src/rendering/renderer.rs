@@ -728,6 +728,134 @@ impl<I: Instance> Renderer<I> {
         }
     }
 
+    pub fn draw_quad_frame(
+        &mut self,
+        transforms: &[glm::TMat4<f32>],
+        sprites: &[Sprite],
+    ) -> Result<Option<Suboptimal>, DrawingError> {
+        // SETUP FOR THIS FRAME
+        let image_available = &self.image_available_semaphores[self.current_frame];
+        let render_finished = &self.render_finished_semaphores[self.current_frame];
+        // Advance the frame _before_ we start using the `?` operator
+        self.current_frame = (self.current_frame + 1) % self.frames_in_flight;
+
+        let (i_u32, i_usize) = unsafe {
+            let image_index = self
+                .swapchain
+                .acquire_image(core::u64::MAX, Some(image_available), None)
+                .map_err(|_| DrawingError::AcquireAnImageFromSwapchain)?;
+
+            (image_index.0, image_index.0 as usize)
+        };
+
+        // Get the fence, and wait for the fence
+        let flight_fence = &self.in_flight_fences[i_usize];
+        unsafe {
+            self.device
+                .wait_for_fence(flight_fence, core::u64::MAX)
+                .map_err(|_| DrawingError::WaitOnFence)?;
+            self.device
+                .reset_fence(flight_fence)
+                .map_err(|_| DrawingError::ResetFence)?;
+        }
+
+        let view = glm::look_at_lh(
+            &glm::make_vec3(&[0.0, 0.0, -1.0]),
+            &glm::make_vec3(&[0.0, 0.0, 0.0]),
+            &glm::make_vec3(&[0.0, 1.0, 0.0]).normalize(),
+        );
+
+        let projection = {
+            let mut temp: glm::TMat4x4<f32> = glm::ortho_lh_zo(-1.0, 1.0, -1.0, 1.0, 0.1, 10.0);
+            temp[(1, 1)] *= -1.0;
+            temp
+        };
+
+        let view_projection = projection * view;
+
+        // RECORD COMMANDS
+        unsafe {
+            let buffer = &mut self.command_buffers[i_usize];
+            const TRIANGLE_CLEAR: [ClearValue; 1] =
+                [ClearValue::Color(ClearColor::Sfloat([0.1, 0.2, 0.3, 1.0]))];
+            buffer.begin(false);
+            {
+                let mut encoder = buffer.begin_render_pass_inline(
+                    &self.render_pass,
+                    &self.framebuffers[i_usize],
+                    self.render_area,
+                    TRIANGLE_CLEAR.iter(),
+                );
+                encoder.bind_graphics_pipeline(&self.graphics_pipeline);
+
+                // Bind the vertex buffers in
+                encoder.bind_vertex_buffers(0, Some((self.vertices.buffer.deref(), 0)));
+                encoder.bind_index_buffer(IndexBufferView {
+                    buffer: &self.indexes.buffer,
+                    offset: 0,
+                    index_type: IndexType::U16,
+                });
+
+                for (transform, sprite) in transforms.iter().zip(sprites.iter()) {
+                    let mvp = {
+                        let temp = view_projection * transform;
+                        if sprite.name == &SpriteName::Zelda {
+                            info!("Drawing Zelda mvp pre-scale at {:#?}", temp);
+                        }
+                        sprite.scale_by_sprite(
+                            &temp,
+                            Origin::new(OriginHorizontal::Center, OriginVertical::Center),
+                        )
+                    };
+
+                    if sprite.name == &SpriteName::Zelda {
+                        info!("Drawing Zelda at {:#?}", mvp);
+                    }
+
+                    // write the textures...
+                    encoder.bind_graphics_descriptor_sets(
+                        &self.pipeline_layout,
+                        0,
+                        Some(self.textures[sprite.texture_handle].descriptor_set.deref()),
+                        &[],
+                    );
+
+                    // send off the projection to the vert shad
+                    encoder.push_graphics_constants(
+                        &self.pipeline_layout,
+                        ShaderStageFlags::VERTEX,
+                        0,
+                        cast_slice::<f32, u32>(&mvp.data)
+                            .expect("this cast never fails for same-aligned same-size data"),
+                    );
+                    trace!("Drawing Sprite {:?} at mvp {:#?}", sprite.name, mvp);
+                    encoder.draw_indexed(0..6, 0, 0..1);
+                }
+            }
+            buffer.finish();
+        }
+
+        // SUBMISSION AND PRESENT
+        let command_buffers = &self.command_buffers[i_usize..=i_usize];
+        let wait_semaphores: ArrayVec<[_; 1]> =
+            [(image_available, PipelineStage::COLOR_ATTACHMENT_OUTPUT)].into();
+        let signal_semaphores: ArrayVec<[_; 1]> = [render_finished].into();
+        // yes, you have to write it twice like this. yes, it's silly.
+        let present_wait_semaphores: ArrayVec<[_; 1]> = [render_finished].into();
+        let submission = Submission {
+            command_buffers,
+            wait_semaphores,
+            signal_semaphores,
+        };
+        let the_command_queue = &mut self.queue_group.queues[0];
+        unsafe {
+            the_command_queue.submit(submission, Some(flight_fence));
+            self.swapchain
+                .present(the_command_queue, i_u32, present_wait_semaphores)
+                .map_err(|_| DrawingError::PresentIntoSwapchain)
+        }
+    }
+
     pub fn recreate_swapchain(&mut self, window: &Window) -> Result<(), &'static str> {
         self.drop_swapchain()?;
 
@@ -830,133 +958,10 @@ impl<I: Instance> Renderer<I> {
 
         Ok(())
     }
-
-    pub fn draw_quad_frame(
-        &mut self,
-        transforms: &[glm::TMat4<f32>],
-        sprites: &[Sprite],
-    ) -> Result<Option<Suboptimal>, DrawingError> {
-        // SETUP FOR THIS FRAME
-        let image_available = &self.image_available_semaphores[self.current_frame];
-        let render_finished = &self.render_finished_semaphores[self.current_frame];
-        // Advance the frame _before_ we start using the `?` operator
-        self.current_frame = (self.current_frame + 1) % self.frames_in_flight;
-
-        let (i_u32, i_usize) = unsafe {
-            let image_index = self
-                .swapchain
-                .acquire_image(core::u64::MAX, Some(image_available), None)
-                .map_err(|_| DrawingError::AcquireAnImageFromSwapchain)?;
-
-            (image_index.0, image_index.0 as usize)
-        };
-
-        // Get the fence, and wait for the fence
-        let flight_fence = &self.in_flight_fences[i_usize];
-        unsafe {
-            self.device
-                .wait_for_fence(flight_fence, core::u64::MAX)
-                .map_err(|_| DrawingError::WaitOnFence)?;
-            self.device
-                .reset_fence(flight_fence)
-                .map_err(|_| DrawingError::ResetFence)?;
-        }
-
-        let view = glm::look_at_lh(
-            &glm::make_vec3(&[0.0, 0.0, -1.0]),
-            &glm::make_vec3(&[0.0, 0.0, 0.0]),
-            &glm::make_vec3(&[0.0, 1.0, 0.0]).normalize(),
-        );
-
-        let projection = {
-            let mut temp: glm::TMat4x4<f32> = glm::ortho_lh_zo(-1.0, 1.0, -1.0, 1.0, 0.1, 10.0);
-            temp[(1, 1)] *= -1.0;
-            temp
-        };
-
-        let view_projection = projection * view;
-
-        // RECORD COMMANDS
-        unsafe {
-            let buffer = &mut self.command_buffers[i_usize];
-            const TRIANGLE_CLEAR: [ClearValue; 1] =
-                [ClearValue::Color(ClearColor::Sfloat([0.1, 0.2, 0.3, 1.0]))];
-            buffer.begin(false);
-            {
-                let mut encoder = buffer.begin_render_pass_inline(
-                    &self.render_pass,
-                    &self.framebuffers[i_usize],
-                    self.render_area,
-                    TRIANGLE_CLEAR.iter(),
-                );
-                encoder.bind_graphics_pipeline(&self.graphics_pipeline);
-
-                // Bind the vertex buffers in
-                encoder.bind_vertex_buffers(0, Some((self.vertices.buffer.deref(), 0)));
-                encoder.bind_index_buffer(IndexBufferView {
-                    buffer: &self.indexes.buffer,
-                    offset: 0,
-                    index_type: IndexType::U16,
-                });
-
-                for (transform, sprite) in transforms.iter().zip(sprites.iter()) {
-                    // let model_sprite = transform * 0;
-                    let mvp = {
-                        let temp = view_projection * transform;
-                        sprite.scale_by_sprite(
-                            &temp,
-                            Origin::new(OriginHorizontal::Center, OriginVertical::Center),
-                        )
-                    };
-
-                    // write the textures...
-                    encoder.bind_graphics_descriptor_sets(
-                        &self.pipeline_layout,
-                        0,
-                        Some(self.textures[sprite.texture_handle].descriptor_set.deref()),
-                        &[],
-                    );
-
-                    // send off the projection to the vert shad
-                    encoder.push_graphics_constants(
-                        &self.pipeline_layout,
-                        ShaderStageFlags::VERTEX,
-                        0,
-                        cast_slice::<f32, u32>(&mvp.data)
-                            .expect("this cast never fails for same-aligned same-size data"),
-                    );
-                    trace!("Drawing Sprite {:?} at mvp {:#?}", sprite.name, mvp);
-                    encoder.draw_indexed(0..6, 0, 0..1);
-                }
-            }
-            buffer.finish();
-        }
-
-        // SUBMISSION AND PRESENT
-        let command_buffers = &self.command_buffers[i_usize..=i_usize];
-        let wait_semaphores: ArrayVec<[_; 1]> =
-            [(image_available, PipelineStage::COLOR_ATTACHMENT_OUTPUT)].into();
-        let signal_semaphores: ArrayVec<[_; 1]> = [render_finished].into();
-        // yes, you have to write it twice like this. yes, it's silly.
-        let present_wait_semaphores: ArrayVec<[_; 1]> = [render_finished].into();
-        let submission = Submission {
-            command_buffers,
-            wait_semaphores,
-            signal_semaphores,
-        };
-        let the_command_queue = &mut self.queue_group.queues[0];
-        unsafe {
-            the_command_queue.submit(submission, Some(flight_fence));
-            self.swapchain
-                .present(the_command_queue, i_u32, present_wait_semaphores)
-                .map_err(|_| DrawingError::PresentIntoSwapchain)
-        }
-    }
 }
 
 impl<I: Instance> core::ops::Drop for Renderer<I> {
     fn drop(&mut self) {
-        error!("Dropping Renderer.");
         self.device.wait_idle().unwrap();
 
         unsafe {

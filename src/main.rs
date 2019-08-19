@@ -11,12 +11,10 @@ mod rendering;
 use gfx_hal::window::Suboptimal;
 use nalgebra_glm as glm;
 use rendering::{Coord, DrawingError, Sprite, TypedRenderer, UserInput, WinitState, SPRITE_LIST};
+use std::time::Instant;
 
 const WINDOW_NAME: &str = "Hello World!";
-const DEFAULT_WINDOW_SIZE: Coord<f32> = Coord {
-    x: 1280.0,
-    y: 720.0,
-};
+const DEFAULT_WINDOW_SIZE: Coord<f32> = Coord { x: 500.0, y: 800.0 };
 
 fn main() {
     env_logger::init();
@@ -32,9 +30,10 @@ fn main() {
     .unwrap();
 
     let mut clean_exit = false;
+    let mut time = Instant::now();
 
     loop {
-        let inputs = UserInput::poll_events_loop(&mut window_state.events_loop);
+        let inputs = UserInput::poll_events_loop(&mut window_state.events_loop, &mut time);
         if inputs.end_requested {
             clean_exit = true;
             break;
@@ -46,14 +45,10 @@ fn main() {
                 break;
             }
 
-            let new_frame_size = inputs.new_frame_size.unwrap();
-            let new_frame_dimensions = Coord::new(new_frame_size.0 as f32, new_frame_size.1 as f32);
-
+            local_state.frame_dimensions = inputs.new_frame_size.unwrap();
             for this_sprite in sprites.iter_mut() {
-                this_sprite.update_window_scale(&new_frame_dimensions);
+                this_sprite.update_window_scale(&local_state.frame_dimensions);
             }
-
-            local_state.frame_dimensions = new_frame_dimensions;
         }
 
         local_state.update_from_input(inputs);
@@ -105,25 +100,26 @@ pub fn do_the_render(
     _local_state: &LocalState,
     sprites: &Vec<Sprite>,
 ) -> Result<Option<Suboptimal>, DrawingError> {
-    // let x1 = 100.0;
-    // let y1 = 100.0;
-    // let quad1 = Quad {
-    //     x: (x1 / local_state.frame_width as f32) * 2.0 - 1.0,
-    //     y: (y1 / local_state.frame_height as f32) * 2.0 - 1.0,
-    //     w: ((1280.0 - x1) / local_state.frame_width as f32) * 2.0,
-    //     h: ((720.0 - y1) / local_state.frame_height as f32) * 2.0,
-    // };
+    /*
+    let x1 = 100.0;
+    let y1 = 100.0;
+    let quad1 = Quad {
+        x: (x1 / local_state.frame_width as f32) * 2.0 - 1.0,
+        y: (y1 / local_state.frame_height as f32) * 2.0 - 1.0,
+        w: ((1280.0 - x1) / local_state.frame_width as f32) * 2.0,
+        h: ((720.0 - y1) / local_state.frame_height as f32) * 2.0,
+    };
 
-    // let quad2 = Quad {
-    //     x: (200.0 / local_state.frame_width as f32) * 2.0 - 1.0,
-    //     y: (200.0 / local_state.frame_height as f32) * 2.0 - 1.0,
-    //     w: ((1280.0 - x1) / local_state.frame_width as f32) * 2.0,
-    //     h: ((720.0 - y1) / local_state.frame_height as f32) * 2.0,
-    // };
-
+    let quad2 = Quad {
+        x: (200.0 / local_state.frame_width as f32) * 2.0 - 1.0,
+        y: (200.0 / local_state.frame_height as f32) * 2.0 - 1.0,
+        w: ((1280.0 - x1) / local_state.frame_width as f32) * 2.0,
+        h: ((720.0 - y1) / local_state.frame_height as f32) * 2.0,
+    };
+    */
     let models = vec![
+        // glm::translate(&glm::identity(), &glm::make_vec3(&[-1.0, 0.0, 0.0])),
         glm::identity(),
-        glm::translate(&glm::identity(), &glm::make_vec3(&[2.0, 2.0, 0.0])),
     ];
 
     renderer.draw_quad_frame(&models, &sprites)
@@ -132,25 +128,31 @@ pub fn do_the_render(
 #[derive(Debug)]
 pub struct LocalState {
     pub frame_dimensions: Coord<f32>,
-    pub mouse_x: f64,
-    pub mouse_y: f64,
+    pub mouse: Coord<f32>,
+    pub spare_time: f32,
 }
 impl LocalState {
     pub fn new(frame_dimensions: Coord<f32>) -> LocalState {
         LocalState {
             frame_dimensions,
-            mouse_x: 0.0,
-            mouse_y: 0.0,
+            mouse: Coord::new(0.0, 0.0),
+            spare_time: 0.0,
         }
     }
 
     pub fn update_from_input(&mut self, input: UserInput) {
         if let Some(frame_size) = input.new_frame_size {
-            self.frame_dimensions = Coord::new(frame_size.0 as f32, frame_size.1 as f32);
+            self.frame_dimensions = frame_size;
         }
         if let Some(position) = input.new_mouse_position {
-            self.mouse_x = position.0;
-            self.mouse_y = position.1;
+            self.mouse = position;
+        }
+
+        self.spare_time += input.seconds;
+        const ONE_SIXTIETH: f32 = 1.0 / 60.0;
+
+        while self.spare_time > 0.0 {
+            self.spare_time -= ONE_SIXTIETH;
         }
     }
 }

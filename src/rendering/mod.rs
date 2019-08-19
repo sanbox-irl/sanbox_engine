@@ -20,8 +20,9 @@ mod sprite;
 
 pub use buffer_bundle::BufferBundle;
 pub use loaded_image::LoadedImage;
-pub use primitives::{Coord, Quad};
-pub use renderer::TypedRenderer;
+pub use primitives::Coord;
+pub use renderer::{TypedRenderer, DrawingError};
 pub use winit_state_user_input::{UserInput, WinitState};
 pub use sprite::*;
 pub use vertex::*;
+pub use super::LocalState;

@@ -7,13 +7,13 @@ pub struct WinitState {
     pub window: Window,
 }
 impl WinitState {
-    pub fn new<T: Into<String>>(title: T, coord: Coord) -> Result<Self, CreationError> {
+    pub fn new<T: Into<String>>(title: T, coord: Coord<f32>) -> Result<Self, CreationError> {
         let events_loop = EventsLoop::new();
         let output = WindowBuilder::new()
             .with_title(title)
             .with_dimensions(LogicalSize {
-                width: coord.x,
-                height: coord.y,
+                width: coord.x as f64,
+                height: coord.y as f64,
             })
             .build(&events_loop);
 

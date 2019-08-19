@@ -10,55 +10,101 @@ mod rendering;
 
 use gfx_hal::window::Suboptimal;
 use nalgebra_glm as glm;
-use rendering::{Coord, Sprite, TypedRenderer, UserInput, WinitState, SPRITE_LIST};
+use rendering::{Coord, DrawingError, Sprite, TypedRenderer, UserInput, WinitState, SPRITE_LIST};
 
 const WINDOW_NAME: &str = "Hello World!";
-const WINDOW_SIZE: Coord = Coord {
-    x: 500.0,
-    y: 500.0,
+const DEFAULT_WINDOW_SIZE: Coord<f32> = Coord {
+    x: 1280.0,
+    y: 720.0,
 };
 
 fn main() {
     env_logger::init();
+    let mut local_state = LocalState::new(DEFAULT_WINDOW_SIZE);
     let mut window_state =
-        WinitState::new(WINDOW_NAME, WINDOW_SIZE).expect("Error on windows creation.");
-    let (mut hal_state, mut sprites) =
-        TypedRenderer::typed_new(&window_state.window, WINDOW_NAME, &SPRITE_LIST).unwrap();
-    let mut local_state = LocalState::new(WINDOW_SIZE);
+        WinitState::new(WINDOW_NAME, DEFAULT_WINDOW_SIZE).expect("Error on windows creation.");
+    let (mut renderer, mut sprites) = TypedRenderer::typed_new(
+        &window_state.window,
+        WINDOW_NAME,
+        &SPRITE_LIST,
+        &local_state,
+    )
+    .unwrap();
+
+    let mut clean_exit = false;
 
     loop {
         let inputs = UserInput::poll_events_loop(&mut window_state.events_loop);
         if inputs.end_requested {
+            clean_exit = true;
             break;
         }
         if inputs.new_frame_size.is_some() {
-            debug!("Window changed size, restarting Renderer...");
-            drop(hal_state);
+            debug!("Window changed size, creating a new swapchain...");
+            if let Err(e) = renderer.recreate_swapchain(&window_state.window) {
+                error!("Couldn't recreate the swapchain: {:?}", e);
+                break;
+            }
 
-            let ret =
-                TypedRenderer::typed_new(&window_state.window, WINDOW_NAME, &SPRITE_LIST).unwrap();
-            hal_state = ret.0;
-            sprites = ret.1;
+            let new_frame_size = inputs.new_frame_size.unwrap();
+            let new_frame_dimensions = Coord::new(new_frame_size.0 as f32, new_frame_size.1 as f32);
+
+            for this_sprite in sprites.iter_mut() {
+                this_sprite.update_window_scale(&new_frame_dimensions);
+            }
+
+            local_state.frame_dimensions = new_frame_dimensions;
         }
 
         local_state.update_from_input(inputs);
-        if let Err(e) = do_the_render(&mut hal_state, &local_state, &sprites) {
-            error!("Rendering Error: {:?}", e);
-            debug!("Auto-restarting Renderer...");
-            drop(hal_state);
-            let ret =
-                TypedRenderer::typed_new(&window_state.window, WINDOW_NAME, &SPRITE_LIST).unwrap();
-            hal_state = ret.0;
-            sprites = ret.1;
+        if let Err(e) = do_the_render(&mut renderer, &local_state, &sprites) {
+            match e {
+                DrawingError::AcquireAnImageFromSwapchain | DrawingError::PresentIntoSwapchain => {
+                    debug!("Creating new swapchain!");
+                    if let Err(e) = renderer.recreate_swapchain(&window_state.window) {
+                        error!("Couldn't recreate the swapchain: {:?}", e);
+                        break;
+                    }
+                }
+
+                DrawingError::ResetFence | DrawingError::WaitOnFence => {
+                    error!("Rendering Error: {:?}", e);
+                    debug!("Auo-restarting Renderer...");
+                    drop(renderer);
+                    let ret = TypedRenderer::typed_new(
+                        &window_state.window,
+                        WINDOW_NAME,
+                        &SPRITE_LIST,
+                        &local_state,
+                    );
+                    match ret {
+                        Ok(new_value) => {
+                            renderer = new_value.0;
+                            sprites = new_value.1;
+                        }
+
+                        Err(_) => {
+                            error!("Couldn't recover from error.");
+                            break;
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    if clean_exit {
+        info!("Exiting cleanly.");
+    } else {
+        error!("Exiting with error.");
     }
 }
 
 pub fn do_the_render(
-    hal_state: &mut TypedRenderer,
-    local_state: &LocalState,
+    renderer: &mut TypedRenderer,
+    _local_state: &LocalState,
     sprites: &Vec<Sprite>,
-) -> Result<Option<Suboptimal>, &'static str> {
+) -> Result<Option<Suboptimal>, DrawingError> {
     // let x1 = 100.0;
     // let y1 = 100.0;
     // let quad1 = Quad {
@@ -80,21 +126,19 @@ pub fn do_the_render(
         glm::translate(&glm::identity(), &glm::make_vec3(&[2.0, 2.0, 0.0])),
     ];
 
-    hal_state.draw_quad_frame(&models, &sprites)
+    renderer.draw_quad_frame(&models, &sprites)
 }
 
 #[derive(Debug)]
 pub struct LocalState {
-    pub frame_width: f64,
-    pub frame_height: f64,
+    pub frame_dimensions: Coord<f32>,
     pub mouse_x: f64,
     pub mouse_y: f64,
 }
 impl LocalState {
-    pub fn new(coord: Coord) -> LocalState {
+    pub fn new(frame_dimensions: Coord<f32>) -> LocalState {
         LocalState {
-            frame_width: coord.x,
-            frame_height: coord.y,
+            frame_dimensions,
             mouse_x: 0.0,
             mouse_y: 0.0,
         }
@@ -102,8 +146,7 @@ impl LocalState {
 
     pub fn update_from_input(&mut self, input: UserInput) {
         if let Some(frame_size) = input.new_frame_size {
-            self.frame_width = frame_size.0;
-            self.frame_height = frame_size.1;
+            self.frame_dimensions = Coord::new(frame_size.0 as f32, frame_size.1 as f32);
         }
         if let Some(position) = input.new_mouse_position {
             self.mouse_x = position.0;

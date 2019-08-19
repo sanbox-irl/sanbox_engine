@@ -33,7 +33,8 @@ use gfx_backend_metal as back;
 use gfx_backend_vulkan as back;
 
 use super::{
-    BufferBundle, LoadedImage, Quad, Sprite, SpriteName, Vertex, QUAD_INDICES, QUAD_VERTICES,
+    BufferBundle, Coord, FileBits, LoadedImage, LocalState, Origin, OriginHorizontal,
+    OriginVertical, Sprite, SpriteName, Vertex, QUAD_INDICES, QUAD_VERTICES,
 };
 
 pub const VERTEX_SOURCE: &str = include_str!("shaders/vert_default.vert");
@@ -42,10 +43,12 @@ pub const FRAGMENT_SOURCE: &str = include_str!("shaders/frag_default.frag");
 pub struct Renderer<I: Instance> {
     // Top
     _instance: ManuallyDrop<I>,
-    _surface: <I::Backend as Backend>::Surface,
-    _adapter: Adapter<I::Backend>,
+    surface: <I::Backend as Backend>::Surface,
+    adapter: Adapter<I::Backend>,
     queue_group: ManuallyDrop<QueueGroup<I::Backend, Graphics>>,
     device: ManuallyDrop<<I::Backend as Backend>::Device>,
+
+    format: Format,
 
     // Pipeline nonsense
     vertices: BufferBundle<I::Backend>,
@@ -76,7 +79,7 @@ pub struct Renderer<I: Instance> {
     command_buffers: Vec<CommandBuffer<I::Backend, Graphics, MultiShot, Primary>>,
 
     // Mis
-    current_frame: usize
+    current_frame: usize,
 }
 
 pub type TypedRenderer = Renderer<back::Instance>;
@@ -85,14 +88,15 @@ impl<I: Instance> Renderer<I> {
         window: &Window,
         window_name: &str,
         sprite_info: &'static [(SpriteName, &[u8])],
+        local_state: &LocalState,
     ) -> Result<(TypedRenderer, Vec<Sprite>), &'static str> {
         // Create An Instance
         let instance = back::Instance::create(window_name, 1);
         // Create A Surface
         let surface = instance.create_surface(window);
-        // Create A HalState
+        // Create A renderer
         let mut tr = TypedRenderer::new(window, instance, surface)?;
-        let sprites = tr.record_textures(sprite_info)?;
+        let sprites = tr.register_textures(sprite_info, &local_state.frame_dimensions)?;
 
         Ok((tr, sprites))
     }
@@ -355,8 +359,9 @@ impl<I: Instance> Renderer<I> {
 
         Ok(Self {
             _instance: manual_new!(instance),
-            _surface: surface,
-            _adapter: adapter,
+            surface,
+            adapter,
+            format,
             device: manual_new!(device),
             queue_group: manual_new!(queue_group),
             swapchain: manual_new!(swapchain),
@@ -618,38 +623,43 @@ impl<I: Instance> Renderer<I> {
         Ok(())
     }
 
-    fn record_textures<'a>(
+    fn register_textures<'a>(
         &mut self,
         sprite_info: &'static [(SpriteName, &'static [u8])],
+        frame_scale: &Coord<f32>,
     ) -> Result<Vec<Sprite>, &'static str> {
         let mut ret = vec![];
         for (name, file) in sprite_info {
+            let image = image::load_from_memory(file)
+                .expect("Binary Corrupted!")
+                .to_rgba();
+
+            let image_dimensions = Coord::new(image.width(), image.height());
             let texture = unsafe {
                 let descriptor_set = self
                     .descriptor_pool
                     .allocate_set(&self.descriptor_set_layouts[0])
                     .map_err(|_| "Couldn't make a Descriptor Set!")?;
 
-                println!("Made one descriptor set!");
-
                 LoadedImage::new(
-                    &self._adapter,
+                    &self.adapter,
                     &*self.device,
                     &mut self.command_pool,
                     &mut self.queue_group.queues[0],
-                    image::load_from_memory(file)
-                        .expect("Binary Corrupted!")
-                        .to_rgba(),
+                    image,
                     descriptor_set,
                 )?
             };
             let len = self.textures.len();
             self.textures.push(texture);
-            ret.push(Sprite {
+            ret.push(Sprite::new(
                 name,
-                file,
-                texture: len,
-            });
+                FileBits(file),
+                len,
+                image_dimensions,
+                frame_scale,
+            ));
+            trace!("Created Sprite: {:#?}", ret.last().unwrap());
         }
 
         Ok(ret)
@@ -718,11 +728,114 @@ impl<I: Instance> Renderer<I> {
         }
     }
 
+    pub fn recreate_swapchain(&mut self, window: &Window) -> Result<(), &'static str> {
+        self.drop_swapchain()?;
+
+        let (caps, formats, _) = self
+            .surface
+            .compatibility(&mut self.adapter.physical_device);
+        assert!(formats.iter().any(|fs| fs.contains(&self.format)));
+
+        let extent = {
+            let window_client_area = window
+                .get_inner_size()
+                .ok_or("Window doesn't exist!")?
+                .to_physical(window.get_hidpi_factor());
+
+            Extent2D {
+                width: caps
+                    .extents
+                    .end()
+                    .width
+                    .min(window_client_area.width as u32),
+                height: caps
+                    .extents
+                    .end()
+                    .height
+                    .min(window_client_area.height as u32),
+            }
+        };
+
+        let swapchain_config =
+            gfx_hal::window::SwapchainConfig::from_caps(&caps, self.format, extent);
+
+        unsafe {
+            let (swapchain, backbuffer) = self
+                .device
+                .create_swapchain(&mut self.surface, swapchain_config, None)
+                .map_err(|_| "Couldn't recreate the swapchain!")?;
+
+            let framebuffers = {
+                let image_views = {
+                    backbuffer
+                        .into_iter()
+                        .map(|image| {
+                            self.device
+                                .create_image_view(
+                                    &image,
+                                    ViewKind::D2,
+                                    self.format,
+                                    Swizzle::NO,
+                                    SubresourceRange {
+                                        aspects: Aspects::COLOR,
+                                        levels: 0..1,
+                                        layers: 0..1,
+                                    },
+                                )
+                                .map_err(|_| "Couldn't create the image_view for the image!")
+                        })
+                        .collect::<Result<Vec<_>, &str>>()?
+                };
+
+                let framebuffers = {
+                    image_views
+                        .iter()
+                        .map(|image_view| {
+                            self.device
+                                .create_framebuffer(
+                                    &self.render_pass,
+                                    vec![image_view],
+                                    Extent {
+                                        width: extent.width as u32,
+                                        height: extent.height as u32,
+                                        depth: 1,
+                                    },
+                                )
+                                .map_err(|_| "Failed to create a framebuffer!")
+                        })
+                        .collect::<Result<Vec<_>, &str>>()?
+                };
+
+                framebuffers
+            };
+
+            // Finally, we got ourselves a nice and shiny new swapchain!
+            // do we need to make new command_buffers? we'll find out! NEXT TIME!
+            self.swapchain = manual_new!(swapchain);
+            self.framebuffers = framebuffers;
+        }
+        Ok(())
+    }
+
+    fn drop_swapchain(&mut self) -> Result<(), &'static str> {
+        self.device.wait_idle().unwrap();
+
+        use core::ptr::read;
+        unsafe {
+            for framebuffer in self.framebuffers.drain(..) {
+                self.device.destroy_framebuffer(framebuffer);
+            }
+            self.device.destroy_swapchain(manual_drop!(self.swapchain));
+        }
+
+        Ok(())
+    }
+
     pub fn draw_quad_frame(
         &mut self,
-        models: &[glm::TMat4<f32>],
-        sprite: &[Sprite],
-    ) -> Result<Option<Suboptimal>, &'static str> {
+        transforms: &[glm::TMat4<f32>],
+        sprites: &[Sprite],
+    ) -> Result<Option<Suboptimal>, DrawingError> {
         // SETUP FOR THIS FRAME
         let image_available = &self.image_available_semaphores[self.current_frame];
         let render_finished = &self.render_finished_semaphores[self.current_frame];
@@ -733,7 +846,8 @@ impl<I: Instance> Renderer<I> {
             let image_index = self
                 .swapchain
                 .acquire_image(core::u64::MAX, Some(image_available), None)
-                .map_err(|_| "Couldn't acquire an image from the swapchain!")?;
+                .map_err(|_| DrawingError::AcquireAnImageFromSwapchain)?;
+
             (image_index.0, image_index.0 as usize)
         };
 
@@ -742,10 +856,10 @@ impl<I: Instance> Renderer<I> {
         unsafe {
             self.device
                 .wait_for_fence(flight_fence, core::u64::MAX)
-                .map_err(|_| "Failed to wait on the fence!")?;
+                .map_err(|_| DrawingError::WaitOnFence)?;
             self.device
                 .reset_fence(flight_fence)
-                .map_err(|_| "Couldn't reset the fence!")?;
+                .map_err(|_| DrawingError::ResetFence)?;
         }
 
         let view = glm::look_at_lh(
@@ -755,7 +869,7 @@ impl<I: Instance> Renderer<I> {
         );
 
         let projection = {
-            let mut temp = glm::ortho_lh_zo(-5.0, 5.0, -5.0, 5.0, 0.1, 100.0);
+            let mut temp: glm::TMat4x4<f32> = glm::ortho_lh_zo(-1.0, 1.0, -1.0, 1.0, 0.1, 10.0);
             temp[(1, 1)] *= -1.0;
             temp
         };
@@ -785,15 +899,25 @@ impl<I: Instance> Renderer<I> {
                     index_type: IndexType::U16,
                 });
 
-                for (i, model) in models.iter().enumerate() {
+                for (transform, sprite) in transforms.iter().zip(sprites.iter()) {
+                    // let model_sprite = transform * 0;
+                    let mvp = {
+                        let temp = view_projection * transform;
+                        sprite.scale_by_sprite(
+                            &temp,
+                            Origin::new(OriginHorizontal::Center, OriginVertical::Center),
+                        )
+                    };
+
                     // write the textures...
                     encoder.bind_graphics_descriptor_sets(
                         &self.pipeline_layout,
                         0,
-                        Some(self.textures[sprite[i].texture].descriptor_set.deref()),
+                        Some(self.textures[sprite.texture_handle].descriptor_set.deref()),
                         &[],
                     );
-                    let mvp = view_projection * model;
+
+                    // send off the projection to the vert shad
                     encoder.push_graphics_constants(
                         &self.pipeline_layout,
                         ShaderStageFlags::VERTEX,
@@ -801,6 +925,7 @@ impl<I: Instance> Renderer<I> {
                         cast_slice::<f32, u32>(&mvp.data)
                             .expect("this cast never fails for same-aligned same-size data"),
                     );
+                    trace!("Drawing Sprite {:?} at mvp {:#?}", sprite.name, mvp);
                     encoder.draw_indexed(0..6, 0, 0..1);
                 }
             }
@@ -824,14 +949,14 @@ impl<I: Instance> Renderer<I> {
             the_command_queue.submit(submission, Some(flight_fence));
             self.swapchain
                 .present(the_command_queue, i_u32, present_wait_semaphores)
-                .map_err(|_| "Failed to present into the swapchain!")
+                .map_err(|_| DrawingError::PresentIntoSwapchain)
         }
     }
 }
 
 impl<I: Instance> core::ops::Drop for Renderer<I> {
     fn drop(&mut self) {
-        error!("Dropping HALState.");
+        error!("Dropping Renderer.");
         self.device.wait_idle().unwrap();
 
         unsafe {
@@ -930,4 +1055,12 @@ pub fn cast_slice<T: Pod, U: Pod>(ts: &[T]) -> Option<&[U]> {
             }
         }
     }
+}
+
+#[derive(Debug)]
+pub enum DrawingError {
+    AcquireAnImageFromSwapchain,
+    WaitOnFence,
+    ResetFence,
+    PresentIntoSwapchain,
 }

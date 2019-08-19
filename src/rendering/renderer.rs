@@ -545,7 +545,7 @@ impl<I: Instance> Renderer<I> {
         let descriptor_pool = unsafe {
             device
                 .create_descriptor_pool(
-                    2,
+                    1,
                     &[
                         DescriptorRangeDesc {
                             ty: DescriptorType::SampledImage,

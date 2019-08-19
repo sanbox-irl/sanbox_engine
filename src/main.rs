@@ -13,6 +13,8 @@ use nalgebra_glm as glm;
 use rendering::{Coord, DrawingError, Sprite, TypedRenderer, UserInput, WinitState, SPRITE_LIST};
 use std::time::Instant;
 
+type TMat4f32 = glm::TMat4<f32>;
+
 const WINDOW_NAME: &str = "Hello World!";
 const DEFAULT_WINDOW_SIZE: Coord<f32> = Coord {
     x: 1280.0,
@@ -31,30 +33,31 @@ fn main() {
         &local_state,
     )
     .unwrap();
+    let mut user_input = UserInput::default();
 
     let mut clean_exit = false;
     let mut time = Instant::now();
 
     loop {
-        let inputs = UserInput::poll_events_loop(&mut window_state.events_loop, &mut time);
-        if inputs.end_requested {
+        user_input.poll_events_loop(&mut window_state.events_loop, &mut time);
+        if user_input.end_requested {
             clean_exit = true;
             break;
         }
-        if inputs.new_frame_size.is_some() {
+        if user_input.new_frame_size.is_some() {
             debug!("Window changed size, creating a new swapchain...");
             if let Err(e) = renderer.recreate_swapchain(&window_state.window) {
                 error!("Couldn't recreate the swapchain: {:?}", e);
                 break;
             }
 
-            local_state.frame_dimensions = inputs.new_frame_size.unwrap();
+            local_state.frame_dimensions = user_input.new_frame_size.unwrap();
             for this_sprite in sprites.iter_mut() {
                 this_sprite.update_window_scale(&local_state.frame_dimensions);
             }
         }
 
-        local_state.update_from_input(inputs);
+        local_state.update_from_input(&user_input);
         if let Err(e) = do_the_render(&mut renderer, &local_state, &sprites) {
             match e {
                 DrawingError::AcquireAnImageFromSwapchain | DrawingError::PresentIntoSwapchain => {
@@ -100,7 +103,7 @@ fn main() {
 
 pub fn do_the_render(
     renderer: &mut TypedRenderer,
-    _local_state: &LocalState,
+    local_state: &LocalState,
     sprites: &Vec<Sprite>,
 ) -> Result<Option<Suboptimal>, DrawingError> {
     /*
@@ -125,19 +128,13 @@ pub fn do_the_render(
         // glm::identity(),
     ];
 
-    let view = glm::look_at_lh(
-        &glm::make_vec3(&[0.0, 0.0, -1.0]),
-        &glm::make_vec3(&[0.0, 0.0, 0.0]),
-        &glm::make_vec3(&[0.0, 1.0, 0.0]).normalize(),
-    );
-
     let projection = {
-        let mut temp: glm::TMat4<f32> = glm::ortho_lh_zo(-1.0, 1.0, -1.0, 1.0, 0.1, 10.0);
+        let mut temp = glm::ortho_lh_zo(-1.0, 1.0, -1.0, 1.0, 0.1, 10.0);
         temp[(1, 1)] *= -1.0;
         temp
     };
 
-    let view_projection = projection * view;
+    let view_projection = projection * local_state.camera.make_view_matrix();
     renderer.draw_quad_frame(&models, &sprites, &view_projection)
 }
 
@@ -146,6 +143,7 @@ pub struct LocalState {
     pub frame_dimensions: Coord<f32>,
     pub mouse: Coord<f32>,
     pub spare_time: f32,
+    pub camera: Camera,
 }
 impl LocalState {
     pub fn new(frame_dimensions: Coord<f32>) -> LocalState {
@@ -153,10 +151,11 @@ impl LocalState {
             frame_dimensions,
             mouse: Coord::new(0.0, 0.0),
             spare_time: 0.0,
+            camera: Camera::new_at_position(glm::make_vec3(&[0.0, 0.0, -1.0])),
         }
     }
 
-    pub fn update_from_input(&mut self, input: UserInput) {
+    pub fn update_from_input(&mut self, input: &UserInput) {
         if let Some(frame_size) = input.new_frame_size {
             self.frame_dimensions = frame_size;
         }
@@ -170,5 +169,24 @@ impl LocalState {
         while self.spare_time > 0.0 {
             self.spare_time -= ONE_SIXTIETH;
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Camera {
+    pub position: glm::TVec3<f32>,
+}
+
+impl Camera {
+    pub fn new_at_position(position: glm::TVec3<f32>) -> Camera {
+        Camera { position }
+    }
+
+    pub fn make_view_matrix(&self) -> TMat4f32 {
+        glm::look_at_lh(
+            &self.position,
+            &glm::make_vec3(&[0.0, 0.0, 0.0]),
+            &glm::make_vec3(&[0.0, 0.1, 0.0]).normalize(),
+        )
     }
 }

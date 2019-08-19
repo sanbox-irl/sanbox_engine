@@ -7,7 +7,7 @@ layout (location = 0) out vec4 color;
 void main() {
     color = texture(sampler2D(tex, samp), frag_uv);
     
-    if (color.w < 0.01) {
-        discard;
-    }
+    // if (color.w < 0.01) {
+    //     discard;
+    // }
 }

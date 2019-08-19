@@ -14,7 +14,10 @@ use rendering::{Coord, DrawingError, Sprite, TypedRenderer, UserInput, WinitStat
 use std::time::Instant;
 
 const WINDOW_NAME: &str = "Hello World!";
-const DEFAULT_WINDOW_SIZE: Coord<f32> = Coord { x: 500.0, y: 800.0 };
+const DEFAULT_WINDOW_SIZE: Coord<f32> = Coord {
+    x: 1280.0,
+    y: 720.0,
+};
 
 fn main() {
     env_logger::init();
@@ -118,11 +121,24 @@ pub fn do_the_render(
     };
     */
     let models = vec![
-        // glm::translate(&glm::identity(), &glm::make_vec3(&[-1.0, 0.0, 0.0])),
-        glm::identity(),
+        glm::translate(&glm::identity(), &glm::make_vec3(&[-0.5, -0.8, 0.0])),
+        // glm::identity(),
     ];
 
-    renderer.draw_quad_frame(&models, &sprites)
+    let view = glm::look_at_lh(
+        &glm::make_vec3(&[0.0, 0.0, -1.0]),
+        &glm::make_vec3(&[0.0, 0.0, 0.0]),
+        &glm::make_vec3(&[0.0, 1.0, 0.0]).normalize(),
+    );
+
+    let projection = {
+        let mut temp: glm::TMat4<f32> = glm::ortho_lh_zo(-1.0, 1.0, -1.0, 1.0, 0.1, 10.0);
+        temp[(1, 1)] *= -1.0;
+        temp
+    };
+
+    let view_projection = projection * view;
+    renderer.draw_quad_frame(&models, &sprites, &view_projection)
 }
 
 #[derive(Debug)]

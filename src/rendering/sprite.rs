@@ -41,16 +41,16 @@ impl Sprite {
         image_dimensions: Coord<u32>,
         frame_dimensions: &Coord<f32>,
     ) -> Sprite {
-        Sprite {
+        let mut ret = Sprite {
             name,
             file_bits,
             texture_handle,
             image_dimensions,
-            internal_scaler: Coord::new(
-                2.0 * image_dimensions.x as f32 / (frame_dimensions.x),
-                2.0 * image_dimensions.y as f32 / (frame_dimensions.y),
-            ),
-        }
+            internal_scaler: Coord::new(0.0, 0.0),
+        };
+        ret.update_window_scale(frame_dimensions);
+
+        ret
     }
 
     pub fn update_window_scale(&mut self, frame_dimensions: &Coord<f32>) {

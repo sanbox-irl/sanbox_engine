@@ -545,7 +545,7 @@ impl<I: Instance> Renderer<I> {
         let descriptor_pool = unsafe {
             device
                 .create_descriptor_pool(
-                    1,
+                    2,
                     &[
                         DescriptorRangeDesc {
                             ty: DescriptorType::SampledImage,
@@ -732,6 +732,7 @@ impl<I: Instance> Renderer<I> {
         &mut self,
         transforms: &[glm::TMat4<f32>],
         sprites: &[Sprite],
+        view_projection: &glm::TMat4<f32>
     ) -> Result<Option<Suboptimal>, DrawingError> {
         // SETUP FOR THIS FRAME
         let image_available = &self.image_available_semaphores[self.current_frame];
@@ -759,20 +760,6 @@ impl<I: Instance> Renderer<I> {
                 .map_err(|_| DrawingError::ResetFence)?;
         }
 
-        let view = glm::look_at_lh(
-            &glm::make_vec3(&[0.0, 0.0, -1.0]),
-            &glm::make_vec3(&[0.0, 0.0, 0.0]),
-            &glm::make_vec3(&[0.0, 1.0, 0.0]).normalize(),
-        );
-
-        let projection = {
-            let mut temp: glm::TMat4x4<f32> = glm::ortho_lh_zo(-1.0, 1.0, -1.0, 1.0, 0.1, 10.0);
-            temp[(1, 1)] *= -1.0;
-            temp
-        };
-
-        let view_projection = projection * view;
-
         // RECORD COMMANDS
         unsafe {
             let buffer = &mut self.command_buffers[i_usize];
@@ -799,18 +786,11 @@ impl<I: Instance> Renderer<I> {
                 for (transform, sprite) in transforms.iter().zip(sprites.iter()) {
                     let mvp = {
                         let temp = view_projection * transform;
-                        if sprite.name == &SpriteName::Zelda {
-                            info!("Drawing Zelda mvp pre-scale at {:#?}", temp);
-                        }
                         sprite.scale_by_sprite(
                             &temp,
                             Origin::new(OriginHorizontal::Center, OriginVertical::Center),
                         )
                     };
-
-                    if sprite.name == &SpriteName::Zelda {
-                        info!("Drawing Zelda at {:#?}", mvp);
-                    }
 
                     // write the textures...
                     encoder.bind_graphics_descriptor_sets(
@@ -828,7 +808,6 @@ impl<I: Instance> Renderer<I> {
                         cast_slice::<f32, u32>(&mvp.data)
                             .expect("this cast never fails for same-aligned same-size data"),
                     );
-                    trace!("Drawing Sprite {:?} at mvp {:#?}", sprite.name, mvp);
                     encoder.draw_indexed(0..6, 0, 0..1);
                 }
             }

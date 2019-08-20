@@ -38,13 +38,13 @@ fn main() {
     let mut user_input = UserInput::default();
 
     local_state.entities.push(Entity::new(
-        glm::make_vec3(&[0.0, 0.0, 0.0]),
+        glm::make_vec3(&[1.0, 0.0, 0.0]),
         *sprites.get(&SpriteName::CenterDot).unwrap(),
     ));
-    // local_state.entities.push(Entity::new(
-    //     glm::make_vec3(&[1, 0.0, 0.0]),
-    //     *sprites.get(&SpriteName::CenterDot).unwrap(),
-    // ));
+    local_state.entities.push(Entity::new(
+        glm::make_vec3(&[1.0, 0.0, 1.0]),
+        *sprites.get(&SpriteName::Link).unwrap(),
+    ));
 
     let mut clean_exit = false;
     let mut time = Instant::now();

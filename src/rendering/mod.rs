@@ -25,4 +25,4 @@ pub use renderer::{TypedRenderer, DrawingError};
 pub use winit_state_user_input::{UserInput, WinitState};
 pub use sprite::*;
 pub use vertex::*;
-pub use super::LocalState;
+pub use super::{LocalState, Entity};

@@ -1,9 +1,10 @@
 use super::Coord;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
 pub enum SpriteName {
     Zelda,
     Link,
+    CenterDot,
 }
 
 // Look into this! we want a macro that can handle this!
@@ -11,8 +12,11 @@ pub enum SpriteName {
 //   Zelda => "../../resources/sprites/zelda.png",
 //   Link => "../../resources/sprites/link.png",
 //];
+// 
+pub const SPRITE_SIZE: usize = 3;
 
-pub static SPRITE_LIST: [(SpriteName, &[u8]); 2] = [
+#[cfg_attr(rustfmt, rustfmt_skip)]
+pub const SPRITE_LIST: [(SpriteName, &[u8]); SPRITE_SIZE] = [
     (
         SpriteName::Link,
         include_bytes!("../../resources/sprites/link.png"),
@@ -21,12 +25,15 @@ pub static SPRITE_LIST: [(SpriteName, &[u8]); 2] = [
         SpriteName::Zelda,
         include_bytes!("../../resources/sprites/zelda.png"),
     ),
+    (
+        SpriteName::CenterDot,
+        include_bytes!("../../resources/sprites/center dot.png")
+    )
 ];
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct Sprite {
-    pub name: &'static SpriteName,
-    pub file_bits: FileBits,
+    pub name: SpriteName,
     pub texture_handle: usize,
     pub image_dimensions: Coord<u32>,
     internal_scaler: Coord<f32>,
@@ -35,15 +42,13 @@ pub struct Sprite {
 use nalgebra_glm as glm;
 impl Sprite {
     pub fn new(
-        name: &'static SpriteName,
-        file_bits: FileBits,
+        name: SpriteName,
         texture_handle: usize,
         image_dimensions: Coord<u32>,
         frame_dimensions: &Coord<f32>,
     ) -> Sprite {
         let mut ret = Sprite {
             name,
-            file_bits,
             texture_handle,
             image_dimensions,
             internal_scaler: Coord::new(0.0, 0.0),
@@ -60,24 +65,10 @@ impl Sprite {
         );
     }
 
-    pub fn scale_by_sprite(
-        &self,
-        matrix: &glm::TMat4x4<f32>,
-        _origin: Origin,
-    ) -> glm::TMat4x4<f32> {
+    pub fn scale_by_sprite(&self, matrix: &glm::TMat4x4<f32>, origin: Origin) -> glm::TMat4x4<f32> {
         let scale = glm::make_vec3(&[self.internal_scaler.x, self.internal_scaler.y, 1.0]);
         let image_scaled = glm::scale(matrix, &scale);
-        image_scaled
-        // _origin.translate(&image_scaled)
-        // image_scaled
-        //
-    }
-}
-
-pub struct FileBits(pub &'static [u8]);
-impl std::fmt::Debug for FileBits {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "--")
+        origin.translate(&image_scaled)
     }
 }
 
@@ -89,10 +80,7 @@ pub struct Origin {
 
 impl Origin {
     pub fn new(horizontal: OriginHorizontal, vertical: OriginVertical) -> Origin {
-        Origin {
-            horizontal,
-            vertical,
-        }
+        Origin { horizontal, vertical }
     }
 
     pub fn translate(&self, matrix: &glm::TMat4x4<f32>) -> glm::TMat4x4<f32> {

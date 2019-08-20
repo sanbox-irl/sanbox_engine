@@ -8,32 +8,43 @@ extern crate image;
 
 mod rendering;
 
+use arrayvec::ArrayVec;
 use gfx_hal::window::Suboptimal;
 use nalgebra_glm as glm;
-use rendering::{Coord, DrawingError, Sprite, TypedRenderer, UserInput, WinitState, SPRITE_LIST};
+use rendering::{Coord, DrawingError, Sprite, SpriteName, TypedRenderer, UserInput, WinitState, SPRITE_LIST};
 use std::time::Instant;
+use winit::{dpi::LogicalSize, VirtualKeyCode};
 
 type TMat4f32 = glm::TMat4<f32>;
 
 const WINDOW_NAME: &str = "Hello World!";
-const DEFAULT_WINDOW_SIZE: Coord<f32> = Coord {
-    x: 1280.0,
-    y: 720.0,
-};
+
+const WINDOW_SIZE_CYCLE: [Coord<f32>; 4] = [
+    Coord { x: 640.0, y: 270.0 },
+    Coord { x: 960.0, y: 540.0 },
+    Coord { x: 1280.0, y: 720.0 },
+    Coord { x: 1920.0, y: 1080.0 },
+];
 
 fn main() {
     env_logger::init();
-    let mut local_state = LocalState::new(DEFAULT_WINDOW_SIZE);
-    let mut window_state =
-        WinitState::new(WINDOW_NAME, DEFAULT_WINDOW_SIZE).expect("Error on windows creation.");
-    let (mut renderer, mut sprites) = TypedRenderer::typed_new(
-        &window_state.window,
-        WINDOW_NAME,
-        &SPRITE_LIST,
-        &local_state,
-    )
-    .unwrap();
+
+    let mut screen_size = 0;
+
+    let mut window_state = WinitState::new(WINDOW_NAME, WINDOW_SIZE_CYCLE[0]).expect("Error on windows creation.");
+    let (mut renderer, mut sprites) =
+        TypedRenderer::typed_new(&window_state.window, WINDOW_NAME, &SPRITE_LIST, &WINDOW_SIZE_CYCLE[0]).unwrap();
+    let mut local_state = LocalState::new(WINDOW_SIZE_CYCLE[0]);
     let mut user_input = UserInput::default();
+
+    local_state.entities.push(Entity::new(
+        glm::make_vec3(&[0.0, 0.0, 0.0]),
+        *sprites.get(&SpriteName::CenterDot).unwrap(),
+    ));
+    // local_state.entities.push(Entity::new(
+    //     glm::make_vec3(&[1, 0.0, 0.0]),
+    //     *sprites.get(&SpriteName::CenterDot).unwrap(),
+    // ));
 
     let mut clean_exit = false;
     let mut time = Instant::now();
@@ -46,23 +57,60 @@ fn main() {
         }
         if user_input.new_frame_size.is_some() {
             debug!("Window changed size, creating a new swapchain...");
-            if let Err(e) = renderer.recreate_swapchain(&window_state.window) {
+            local_state.frame_dimensions = user_input.new_frame_size.unwrap();
+            if let Err(e) = renderer.recreate_swapchain(&local_state.frame_dimensions) {
                 error!("Couldn't recreate the swapchain: {:?}", e);
                 break;
             }
 
-            local_state.frame_dimensions = user_input.new_frame_size.unwrap();
             for this_sprite in sprites.iter_mut() {
-                this_sprite.update_window_scale(&local_state.frame_dimensions);
+                this_sprite.1.update_window_scale(&local_state.frame_dimensions);
+            }
+        }
+
+        if user_input.pressed.contains(&VirtualKeyCode::Key1) {
+            println!("Camera is looking like: {}", local_state.camera.position);
+            println!("Camera Matrix is: {}", local_state.camera.make_view_matrix());
+
+            let projection = {
+                let mut temp = glm::ortho_lh_zo(-1.0, 1.0, -1.0, 1.0, 0.1, 10.0);
+                temp[(1, 1)] *= -1.0;
+                temp
+            };
+
+            let view_projection = projection * local_state.camera.make_view_matrix();
+            println!("View-Projection is {}", view_projection);
+        }
+
+        if user_input.pressed.contains(&VirtualKeyCode::Tab) {
+            screen_size += 1;
+            if screen_size > 3 {
+                screen_size = 0;
+            }
+
+            window_state.window.set_inner_size(LogicalSize {
+                width: WINDOW_SIZE_CYCLE[screen_size].x as f64,
+                height: WINDOW_SIZE_CYCLE[screen_size].y as f64,
+            });
+
+            debug!("Window changed size, creating a new swapchain...");
+            if let Err(e) = renderer.recreate_swapchain(&WINDOW_SIZE_CYCLE[screen_size]) {
+                error!("Couldn't recreate the swapchain: {:?}", e);
+                break;
+            }
+
+            local_state.frame_dimensions = WINDOW_SIZE_CYCLE[screen_size];
+            for this_sprite in sprites.iter_mut() {
+                this_sprite.1.update_window_scale(&local_state.frame_dimensions);
             }
         }
 
         local_state.update_from_input(&user_input);
-        if let Err(e) = do_the_render(&mut renderer, &local_state, &sprites) {
+        if let Err(e) = do_the_render(&mut renderer, &local_state, &user_input) {
             match e {
                 DrawingError::AcquireAnImageFromSwapchain | DrawingError::PresentIntoSwapchain => {
                     debug!("Creating new swapchain!");
-                    if let Err(e) = renderer.recreate_swapchain(&window_state.window) {
+                    if let Err(e) = renderer.recreate_swapchain(&local_state.frame_dimensions) {
                         error!("Couldn't recreate the swapchain: {:?}", e);
                         break;
                     }
@@ -76,7 +124,7 @@ fn main() {
                         &window_state.window,
                         WINDOW_NAME,
                         &SPRITE_LIST,
-                        &local_state,
+                        &WINDOW_SIZE_CYCLE[screen_size],
                     );
                     match ret {
                         Ok(new_value) => {
@@ -104,30 +152,8 @@ fn main() {
 pub fn do_the_render(
     renderer: &mut TypedRenderer,
     local_state: &LocalState,
-    sprites: &Vec<Sprite>,
+    user_input: &UserInput,
 ) -> Result<Option<Suboptimal>, DrawingError> {
-    /*
-    let x1 = 100.0;
-    let y1 = 100.0;
-    let quad1 = Quad {
-        x: (x1 / local_state.frame_width as f32) * 2.0 - 1.0,
-        y: (y1 / local_state.frame_height as f32) * 2.0 - 1.0,
-        w: ((1280.0 - x1) / local_state.frame_width as f32) * 2.0,
-        h: ((720.0 - y1) / local_state.frame_height as f32) * 2.0,
-    };
-
-    let quad2 = Quad {
-        x: (200.0 / local_state.frame_width as f32) * 2.0 - 1.0,
-        y: (200.0 / local_state.frame_height as f32) * 2.0 - 1.0,
-        w: ((1280.0 - x1) / local_state.frame_width as f32) * 2.0,
-        h: ((720.0 - y1) / local_state.frame_height as f32) * 2.0,
-    };
-    */
-    let models = vec![
-        glm::translate(&glm::identity(), &glm::make_vec3(&[-0.5, -0.8, 0.0])),
-        // glm::identity(),
-    ];
-
     let projection = {
         let mut temp = glm::ortho_lh_zo(-1.0, 1.0, -1.0, 1.0, 0.1, 10.0);
         temp[(1, 1)] *= -1.0;
@@ -135,7 +161,11 @@ pub fn do_the_render(
     };
 
     let view_projection = projection * local_state.camera.make_view_matrix();
-    renderer.draw_quad_frame(&models, &sprites, &view_projection)
+    renderer.draw_quad_frame(
+        &local_state.entities,
+        &view_projection,
+        user_input.pressed.contains(&VirtualKeyCode::Key1),
+    )
 }
 
 #[derive(Debug)]
@@ -144,6 +174,7 @@ pub struct LocalState {
     pub mouse: Coord<f32>,
     pub spare_time: f32,
     pub camera: Camera,
+    pub entities: ArrayVec<[Entity; 10]>,
 }
 impl LocalState {
     pub fn new(frame_dimensions: Coord<f32>) -> LocalState {
@@ -152,6 +183,7 @@ impl LocalState {
             mouse: Coord::new(0.0, 0.0),
             spare_time: 0.0,
             camera: Camera::new_at_position(glm::make_vec3(&[0.0, 0.0, -1.0])),
+            entities: ArrayVec::new(),
         }
     }
 
@@ -163,12 +195,8 @@ impl LocalState {
             self.mouse = position;
         }
 
-        self.spare_time += input.seconds;
-        const ONE_SIXTIETH: f32 = 1.0 / 60.0;
-
-        while self.spare_time > 0.0 {
-            self.spare_time -= ONE_SIXTIETH;
-        }
+        self.camera.update_position(input, 0.05);
+        trace!("Camera position is {:?}", self.camera.position);
     }
 }
 
@@ -182,11 +210,46 @@ impl Camera {
         Camera { position }
     }
 
+    pub fn update_position(&mut self, input: &UserInput, distance: f32) {
+        let right: glm::TVec3<f32> = glm::make_vec3(&[1.0, 0.0, 0.0]);
+        let up: glm::TVec3<f32> = glm::make_vec3(&[0.0, 1.0, 0.0]);
+
+        let mut move_vector = input
+            .held
+            .iter()
+            .fold(glm::make_vec3(&[0.0, 0.0, 0.0]), |vec, key| match *key {
+                VirtualKeyCode::W | VirtualKeyCode::Up => vec + up,
+                VirtualKeyCode::S | VirtualKeyCode::Down => vec - up,
+                VirtualKeyCode::D | VirtualKeyCode::Right => vec + right,
+                VirtualKeyCode::A | VirtualKeyCode::Left => vec - right,
+                _ => vec,
+            });
+        if move_vector != glm::zero() {
+            move_vector = move_vector.normalize();
+        }
+        self.position += move_vector * distance;
+    }
+
     pub fn make_view_matrix(&self) -> TMat4f32 {
         glm::look_at_lh(
             &self.position,
-            &glm::make_vec3(&[0.0, 0.0, 0.0]),
-            &glm::make_vec3(&[0.0, 0.1, 0.0]).normalize(),
+            &glm::make_vec3(&[self.position[0], self.position[1], 0.0]),
+            &glm::make_vec3(&[0.0, 1.0, 0.0]).normalize(),
         )
+    }
+}
+
+#[derive(Debug)]
+pub struct Entity {
+    pub position: glm::TMat4<f32>,
+    pub sprite: Sprite,
+}
+
+impl Entity {
+    pub fn new(starting_position: glm::TVec3<f32>, sprite: Sprite) -> Self {
+        Entity {
+            position: glm::translate(&glm::identity(), &starting_position),
+            sprite,
+        }
     }
 }

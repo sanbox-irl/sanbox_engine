@@ -11,18 +11,18 @@ use gfx_hal::{
     pass::{Attachment, AttachmentLoadOp, AttachmentOps, AttachmentStoreOp, Subpass, SubpassDesc},
     pool::{CommandPool, CommandPoolCreateFlags},
     pso::{
-        BakedStates, BasePipeline, BlendDesc, BlendOp, BlendState, ColorBlendDesc, ColorMask,
-        DepthStencilDesc, DescriptorRangeDesc, DescriptorSetLayoutBinding, DescriptorType,
-        ElemStride, EntryPoint, Face, Factor, FrontFace, GraphicsPipelineDesc, GraphicsShaderSet,
-        InputAssemblerDesc, LogicOp, PipelineCreationFlags, PipelineStage, PolygonMode, Rasterizer,
-        Rect, ShaderStageFlags, Specialization, VertexBufferDesc, VertexInputRate, Viewport,
+        BakedStates, BasePipeline, BlendDesc, BlendOp, BlendState, ColorBlendDesc, ColorMask, DepthStencilDesc,
+        DescriptorRangeDesc, DescriptorSetLayoutBinding, DescriptorType, ElemStride, EntryPoint, Face, Factor,
+        FrontFace, GraphicsPipelineDesc, GraphicsShaderSet, InputAssemblerDesc, LogicOp, PipelineCreationFlags,
+        PipelineStage, PolygonMode, Rasterizer, Rect, ShaderStageFlags, Specialization, VertexBufferDesc,
+        VertexInputRate, Viewport,
     },
     queue::{family::QueueGroup, Submission},
     window::{Extent2D, PresentMode, Suboptimal, Surface, Swapchain, SwapchainConfig},
     Backend, DescriptorPool, Features, Gpu, Graphics, IndexType, Instance, Primitive, QueueFamily,
 };
 use nalgebra_glm as glm;
-use std::{borrow::Cow, mem, ops::Deref};
+use std::{borrow::Cow, collections::HashMap, mem, ops::Deref};
 use winit::Window;
 
 #[cfg(feature = "dx12")]
@@ -33,8 +33,8 @@ use gfx_backend_metal as back;
 use gfx_backend_vulkan as back;
 
 use super::{
-    BufferBundle, Coord, FileBits, LoadedImage, LocalState, Origin, OriginHorizontal,
-    OriginVertical, Sprite, SpriteName, Vertex, QUAD_INDICES, QUAD_VERTICES,
+    BufferBundle, Coord, Entity, LoadedImage, Origin, OriginHorizontal, OriginVertical, Sprite, SpriteName, Vertex,
+    QUAD_INDICES, QUAD_VERTICES, SPRITE_SIZE,
 };
 
 pub const VERTEX_SOURCE: &str = include_str!("shaders/vert_default.vert");
@@ -88,15 +88,15 @@ impl<I: Instance> Renderer<I> {
         window: &Window,
         window_name: &str,
         sprite_info: &'static [(SpriteName, &[u8])],
-        local_state: &LocalState,
-    ) -> Result<(TypedRenderer, Vec<Sprite>), &'static str> {
+        frame_dimensions: &Coord<f32>,
+    ) -> Result<(TypedRenderer, HashMap<SpriteName, Sprite>), &'static str> {
         // Create An Instance
         let instance = back::Instance::create(window_name, 1);
         // Create A Surface
         let surface = instance.create_surface(window);
         // Create A renderer
         let mut tr = TypedRenderer::new(window, instance, surface)?;
-        let sprites = tr.register_textures(sprite_info, &local_state.frame_dimensions)?;
+        let sprites = tr.register_textures(sprite_info, frame_dimensions)?;
 
         Ok((tr, sprites))
     }
@@ -143,8 +143,7 @@ impl<I: Instance> Renderer<I> {
 
         let (swapchain, extent, backbuffer, format, frames_in_flight) = {
             // no composite alpha here
-            let (caps, preferred_formats, present_modes) =
-                surface.compatibility(&adapter.physical_device);
+            let (caps, preferred_formats, present_modes) = surface.compatibility(&adapter.physical_device);
             trace!("{:?}", caps);
             trace!("Preferred Formats: {:?}", preferred_formats);
             trace!("Present Modes: {:?}", present_modes);
@@ -170,10 +169,7 @@ impl<I: Instance> Renderer<I> {
                     .cloned()
                 {
                     Some(srgb_format) => srgb_format,
-                    None => formats
-                        .get(0)
-                        .cloned()
-                        .ok_or("Preferred format list was empty!")?,
+                    None => formats.get(0).cloned().ok_or("Preferred format list was empty!")?,
                 },
             };
 
@@ -184,16 +180,8 @@ impl<I: Instance> Renderer<I> {
                     .to_physical(window.get_hidpi_factor());
 
                 Extent2D {
-                    width: caps
-                        .extents
-                        .end()
-                        .width
-                        .min(window_client_area.width as u32),
-                    height: caps
-                        .extents
-                        .end()
-                        .height
-                        .min(window_client_area.height as u32),
+                    width: caps.extents.end().width.min(window_client_area.width as u32),
+                    height: caps.extents.end().height.min(window_client_area.height as u32),
                 }
             };
 
@@ -237,27 +225,13 @@ impl<I: Instance> Renderer<I> {
             let mut render_finished_semaphores = vec![];
             let mut in_flight_fences = vec![];
             for _ in 0..frames_in_flight {
-                in_flight_fences.push(
-                    device
-                        .create_fence(true)
-                        .map_err(|_| "Could not create a fence!")?,
-                );
-                image_available_semaphores.push(
-                    device
-                        .create_semaphore()
-                        .map_err(|_| "Could not create a semaphore!")?,
-                );
-                render_finished_semaphores.push(
-                    device
-                        .create_semaphore()
-                        .map_err(|_| "Could not create a semaphore!")?,
-                );
+                in_flight_fences.push(device.create_fence(true).map_err(|_| "Could not create a fence!")?);
+                image_available_semaphores
+                    .push(device.create_semaphore().map_err(|_| "Could not create a semaphore!")?);
+                render_finished_semaphores
+                    .push(device.create_semaphore().map_err(|_| "Could not create a semaphore!")?);
             }
-            (
-                image_available_semaphores,
-                render_finished_semaphores,
-                in_flight_fences,
-            )
+            (image_available_semaphores, render_finished_semaphores, in_flight_fences)
         };
 
         let render_pass = {
@@ -402,13 +376,7 @@ impl<I: Instance> Renderer<I> {
     > {
         let mut compiler = shaderc::Compiler::new().ok_or("shaderc not found!")?;
         let vertex_compile_artifact = compiler
-            .compile_into_spirv(
-                VERTEX_SOURCE,
-                shaderc::ShaderKind::Vertex,
-                "vertex.vert",
-                "main",
-                None,
-            )
+            .compile_into_spirv(VERTEX_SOURCE, shaderc::ShaderKind::Vertex, "vertex.vert", "main", None)
             .map_err(|_| "Couldn't compile vertex shader!")?;
 
         let fragment_compile_artifact = compiler
@@ -545,15 +513,15 @@ impl<I: Instance> Renderer<I> {
         let descriptor_pool = unsafe {
             device
                 .create_descriptor_pool(
-                    1,
+                    SPRITE_SIZE,
                     &[
                         DescriptorRangeDesc {
                             ty: DescriptorType::SampledImage,
-                            count: 2,
+                            count: SPRITE_SIZE,
                         },
                         DescriptorRangeDesc {
                             ty: DescriptorType::Sampler,
-                            count: 2,
+                            count: SPRITE_SIZE,
                         },
                     ],
                     gfx_hal::pso::DescriptorPoolCreateFlags::empty(),
@@ -595,12 +563,7 @@ impl<I: Instance> Renderer<I> {
             }
         };
 
-        Ok((
-            descriptor_set_layouts,
-            descriptor_pool,
-            layout,
-            gfx_pipeline,
-        ))
+        Ok((descriptor_set_layouts, descriptor_pool, layout, gfx_pipeline))
     }
 
     fn bind_to_memory<T: Copy>(
@@ -627,12 +590,10 @@ impl<I: Instance> Renderer<I> {
         &mut self,
         sprite_info: &'static [(SpriteName, &'static [u8])],
         frame_scale: &Coord<f32>,
-    ) -> Result<Vec<Sprite>, &'static str> {
-        let mut ret = vec![];
+    ) -> Result<HashMap<SpriteName, Sprite>, &'static str> {
+        let mut ret = HashMap::with_capacity(SPRITE_SIZE);
         for (name, file) in sprite_info {
-            let image = image::load_from_memory(file)
-                .expect("Binary Corrupted!")
-                .to_rgba();
+            let image = image::load_from_memory(file).expect("Binary Corrupted!").to_rgba();
 
             let image_dimensions = Coord::new(image.width(), image.height());
             let texture = unsafe {
@@ -652,23 +613,15 @@ impl<I: Instance> Renderer<I> {
             };
             let len = self.textures.len();
             self.textures.push(texture);
-            ret.push(Sprite::new(
-                name,
-                FileBits(file),
-                len,
-                image_dimensions,
-                frame_scale,
-            ));
-            trace!("Created Sprite: {:#?}", ret.last().unwrap());
+            let new_sprite = Sprite::new(*name, len, image_dimensions, frame_scale);
+            trace!("Created Sprite: {:#?}", new_sprite);
+            ret.insert(*name, new_sprite);
         }
 
         Ok(ret)
     }
 
-    pub fn draw_clear_frame(
-        &mut self,
-        color: [f32; 4],
-    ) -> Result<Option<Suboptimal>, &'static str> {
+    pub fn draw_clear_frame(&mut self, color: [f32; 4]) -> Result<Option<Suboptimal>, &'static str> {
         // SETUP FOR THIS FRAME
         let image_available = &self.image_available_semaphores[self.current_frame];
         let render_finished = &self.render_finished_semaphores[self.current_frame];
@@ -709,8 +662,7 @@ impl<I: Instance> Renderer<I> {
 
         // SUBMISSION AND PRESENT
         let command_buffers = &self.command_buffers[i_usize..=i_usize];
-        let wait_semaphores: ArrayVec<[_; 1]> =
-            [(image_available, PipelineStage::COLOR_ATTACHMENT_OUTPUT)].into();
+        let wait_semaphores: ArrayVec<[_; 1]> = [(image_available, PipelineStage::COLOR_ATTACHMENT_OUTPUT)].into();
         let signal_semaphores: ArrayVec<[_; 1]> = [render_finished].into();
         // yes, you have to write it twice like this. yes, it's silly.
         let present_wait_semaphores: ArrayVec<[_; 1]> = [render_finished].into();
@@ -730,9 +682,9 @@ impl<I: Instance> Renderer<I> {
 
     pub fn draw_quad_frame(
         &mut self,
-        transforms: &[glm::TMat4<f32>],
-        sprites: &[Sprite],
-        view_projection: &glm::TMat4<f32>
+        entities: &[Entity],
+        view_projection: &glm::TMat4<f32>,
+        debug: bool,
     ) -> Result<Option<Suboptimal>, DrawingError> {
         // SETUP FOR THIS FRAME
         let image_available = &self.image_available_semaphores[self.current_frame];
@@ -763,8 +715,7 @@ impl<I: Instance> Renderer<I> {
         // RECORD COMMANDS
         unsafe {
             let buffer = &mut self.command_buffers[i_usize];
-            const TRIANGLE_CLEAR: [ClearValue; 1] =
-                [ClearValue::Color(ClearColor::Sfloat([0.1, 0.2, 0.3, 1.0]))];
+            const TRIANGLE_CLEAR: [ClearValue; 1] = [ClearValue::Color(ClearColor::Sfloat([0.1, 0.2, 0.3, 1.0]))];
             buffer.begin(false);
             {
                 let mut encoder = buffer.begin_render_pass_inline(
@@ -783,20 +734,22 @@ impl<I: Instance> Renderer<I> {
                     index_type: IndexType::U16,
                 });
 
-                for (transform, sprite) in transforms.iter().zip(sprites.iter()) {
+                for entity in entities {
                     let mvp = {
-                        let temp = view_projection * transform;
-                        sprite.scale_by_sprite(
-                            &temp,
-                            Origin::new(OriginHorizontal::Center, OriginVertical::Center),
-                        )
+                        let temp = view_projection;
+                        entity
+                            .sprite
+                            .scale_by_sprite(&temp, Origin::new(OriginHorizontal::Center, OriginVertical::Center))
                     };
 
+                    if debug {
+                        println!("MVP is {}", mvp);
+                    }
                     // write the textures...
                     encoder.bind_graphics_descriptor_sets(
                         &self.pipeline_layout,
                         0,
-                        Some(self.textures[sprite.texture_handle].descriptor_set.deref()),
+                        Some(self.textures[entity.sprite.texture_handle].descriptor_set.deref()),
                         &[],
                     );
 
@@ -816,8 +769,7 @@ impl<I: Instance> Renderer<I> {
 
         // SUBMISSION AND PRESENT
         let command_buffers = &self.command_buffers[i_usize..=i_usize];
-        let wait_semaphores: ArrayVec<[_; 1]> =
-            [(image_available, PipelineStage::COLOR_ATTACHMENT_OUTPUT)].into();
+        let wait_semaphores: ArrayVec<[_; 1]> = [(image_available, PipelineStage::COLOR_ATTACHMENT_OUTPUT)].into();
         let signal_semaphores: ArrayVec<[_; 1]> = [render_finished].into();
         // yes, you have to write it twice like this. yes, it's silly.
         let present_wait_semaphores: ArrayVec<[_; 1]> = [render_finished].into();
@@ -835,36 +787,20 @@ impl<I: Instance> Renderer<I> {
         }
     }
 
-    pub fn recreate_swapchain(&mut self, window: &Window) -> Result<(), &'static str> {
+    pub fn recreate_swapchain(&mut self, new_dimensions: &Coord<f32>) -> Result<(), &'static str> {
         self.drop_swapchain()?;
 
-        let (caps, formats, _) = self
-            .surface
-            .compatibility(&mut self.adapter.physical_device);
+        let (caps, formats, _) = self.surface.compatibility(&mut self.adapter.physical_device);
         assert!(formats.iter().any(|fs| fs.contains(&self.format)));
 
         let extent = {
-            let window_client_area = window
-                .get_inner_size()
-                .ok_or("Window doesn't exist!")?
-                .to_physical(window.get_hidpi_factor());
-
             Extent2D {
-                width: caps
-                    .extents
-                    .end()
-                    .width
-                    .min(window_client_area.width as u32),
-                height: caps
-                    .extents
-                    .end()
-                    .height
-                    .min(window_client_area.height as u32),
+                width: new_dimensions.x as u32,
+                height: new_dimensions.y as u32,
             }
         };
 
-        let swapchain_config =
-            gfx_hal::window::SwapchainConfig::from_caps(&caps, self.format, extent);
+        let swapchain_config = gfx_hal::window::SwapchainConfig::from_caps(&caps, self.format, extent);
 
         unsafe {
             let (swapchain, backbuffer) = self
@@ -872,7 +808,7 @@ impl<I: Instance> Renderer<I> {
                 .create_swapchain(&mut self.surface, swapchain_config, None)
                 .map_err(|_| "Couldn't recreate the swapchain!")?;
 
-            let framebuffers = {
+            let (framebuffers, command_pool, command_buffers) = {
                 let image_views = {
                     backbuffer
                         .into_iter()
@@ -913,13 +849,24 @@ impl<I: Instance> Renderer<I> {
                         .collect::<Result<Vec<_>, &str>>()?
                 };
 
-                framebuffers
+                let mut command_pool = self
+                    .device
+                    .create_command_pool_typed(&self.queue_group, CommandPoolCreateFlags::RESET_INDIVIDUAL)
+                    .map_err(|_| "Could not create the raw command pool!")?;
+
+                let command_buffers: Vec<CommandBuffer<I::Backend, Graphics, MultiShot, Primary>> = framebuffers
+                    .iter()
+                    .map(|_| command_pool.acquire_command_buffer())
+                    .collect();
+
+                (framebuffers, command_pool, command_buffers)
             };
 
             // Finally, we got ourselves a nice and shiny new swapchain!
-            // do we need to make new command_buffers? we'll find out! NEXT TIME!
             self.swapchain = manual_new!(swapchain);
             self.framebuffers = framebuffers;
+            self.command_buffers = command_buffers;
+            self.command_pool = manual_new!(command_pool);
         }
         Ok(())
     }
@@ -932,6 +879,9 @@ impl<I: Instance> Renderer<I> {
             for framebuffer in self.framebuffers.drain(..) {
                 self.device.destroy_framebuffer(framebuffer);
             }
+            self.device
+                .destroy_command_pool(manual_drop!(self.command_pool).into_raw());
+
             self.device.destroy_swapchain(manual_drop!(self.swapchain));
         }
 
@@ -973,17 +923,14 @@ impl<I: Instance> core::ops::Drop for Renderer<I> {
             self.vertices.manually_drop(&self.device);
             self.indexes.manually_drop(&self.device);
 
-            self.device
-                .destroy_pipeline_layout(manual_drop!(self.pipeline_layout));
+            self.device.destroy_pipeline_layout(manual_drop!(self.pipeline_layout));
             self.device
                 .destroy_graphics_pipeline(manual_drop!(self.graphics_pipeline));
             self.device
                 .destroy_command_pool(manual_drop!(self.command_pool).into_raw());
-            self.device
-                .destroy_render_pass(manual_drop!(self.render_pass));
+            self.device.destroy_render_pass(manual_drop!(self.render_pass));
             self.device.destroy_swapchain(manual_drop!(self.swapchain));
-            self.device
-                .destroy_descriptor_pool(manual_drop!(self.descriptor_pool));
+            self.device.destroy_descriptor_pool(manual_drop!(self.descriptor_pool));
 
             ManuallyDrop::drop(&mut self.device);
             ManuallyDrop::drop(&mut self._instance);
@@ -997,10 +944,7 @@ pub fn cast_slice<T: Pod, U: Pod>(ts: &[T]) -> Option<&[U]> {
     if mem::size_of::<T>() == 0 || mem::size_of::<U>() == 0 {
         if mem::size_of::<T>() == mem::size_of::<U>() {
             unsafe {
-                return Some(core::slice::from_raw_parts(
-                    ts.as_ptr() as *const U,
-                    ts.len(),
-                ));
+                return Some(core::slice::from_raw_parts(ts.as_ptr() as *const U, ts.len()));
             }
         } else {
             return None;
@@ -1015,28 +959,15 @@ pub fn cast_slice<T: Pod, U: Pod>(ts: &[T]) -> Option<&[U]> {
     }
     if mem::size_of::<T>() == mem::size_of::<U>() {
         // same size, so we direct cast, keeping the old length
-        unsafe {
-            Some(core::slice::from_raw_parts(
-                ts.as_ptr() as *const U,
-                ts.len(),
-            ))
-        }
+        unsafe { Some(core::slice::from_raw_parts(ts.as_ptr() as *const U, ts.len())) }
     } else {
         // we might have slop, which would cause us to fail
         let byte_size = mem::size_of::<T>() * ts.len();
-        let (new_count, new_overflow) = (
-            byte_size / mem::size_of::<U>(),
-            byte_size % mem::size_of::<U>(),
-        );
+        let (new_count, new_overflow) = (byte_size / mem::size_of::<U>(), byte_size % mem::size_of::<U>());
         if new_overflow > 0 {
             return None;
         } else {
-            unsafe {
-                Some(core::slice::from_raw_parts(
-                    ts.as_ptr() as *const U,
-                    new_count,
-                ))
-            }
+            unsafe { Some(core::slice::from_raw_parts(ts.as_ptr() as *const U, new_count)) }
         }
     }
 }

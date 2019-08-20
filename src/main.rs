@@ -20,7 +20,7 @@ type TMat4f32 = glm::TMat4<f32>;
 const WINDOW_NAME: &str = "Hello World!";
 
 const WINDOW_SIZE_CYCLE: [Coord<f32>; 4] = [
-    Coord { x: 640.0, y: 270.0 },
+    Coord { x: 640.0, y: 360.0 },
     Coord { x: 960.0, y: 540.0 },
     Coord { x: 1280.0, y: 720.0 },
     Coord { x: 1920.0, y: 1080.0 },
@@ -56,9 +56,9 @@ fn main() {
             break;
         }
         if user_input.new_frame_size.is_some() {
-            debug!("Window changed size, creating a new swapchain...");
+            debug!("Window changed size, creating a new swapchain 0...");
             local_state.frame_dimensions = user_input.new_frame_size.unwrap();
-            if let Err(e) = renderer.recreate_swapchain(&local_state.frame_dimensions) {
+            if let Err(e) = renderer.recreate_swapchain(&window_state.window) {
                 error!("Couldn't recreate the swapchain: {:?}", e);
                 break;
             }
@@ -93,8 +93,8 @@ fn main() {
                 height: WINDOW_SIZE_CYCLE[screen_size].y as f64,
             });
 
-            debug!("Window changed size, creating a new swapchain...");
-            if let Err(e) = renderer.recreate_swapchain(&WINDOW_SIZE_CYCLE[screen_size]) {
+            debug!("Window changed size, creating a new swapchain 1...");
+            if let Err(e) = renderer.recreate_swapchain(&window_state.window) {
                 error!("Couldn't recreate the swapchain: {:?}", e);
                 break;
             }
@@ -110,7 +110,7 @@ fn main() {
             match e {
                 DrawingError::AcquireAnImageFromSwapchain | DrawingError::PresentIntoSwapchain => {
                     debug!("Creating new swapchain!");
-                    if let Err(e) = renderer.recreate_swapchain(&local_state.frame_dimensions) {
+                    if let Err(e) = renderer.recreate_swapchain(&window_state.window) {
                         error!("Couldn't recreate the swapchain: {:?}", e);
                         break;
                     }

@@ -42,7 +42,7 @@ pub const FRAGMENT_SOURCE: &str = include_str!("shaders/frag_default.frag");
 
 pub struct Renderer<I: Instance> {
     // Top
-    _instance: ManuallyDrop<I>,
+    instance: ManuallyDrop<I>,
     surface: <I::Backend as Backend>::Surface,
     adapter: Adapter<I::Backend>,
     queue_group: ManuallyDrop<QueueGroup<I::Backend, Graphics>>,
@@ -61,7 +61,7 @@ pub struct Renderer<I: Instance> {
     // GPU Swapchain
     textures: Vec<LoadedImage<I::Backend>>,
     swapchain: ManuallyDrop<<I::Backend as Backend>::Swapchain>,
-    render_area: Rect,
+    viewport: Rect,
     in_flight_fences: Vec<<I::Backend as Backend>::Fence>,
     frames_in_flight: usize,
     image_available_semaphores: Vec<<I::Backend as Backend>::Semaphore>,
@@ -332,14 +332,14 @@ impl<I: Instance> Renderer<I> {
         Renderer::<I>::bind_to_memory(&mut device, &indexes, &QUAD_INDICES)?;
 
         Ok(Self {
-            _instance: manual_new!(instance),
+            instance: manual_new!(instance),
             surface,
             adapter,
             format,
             device: manual_new!(device),
             queue_group: manual_new!(queue_group),
             swapchain: manual_new!(swapchain),
-            render_area: extent.to_extent().rect(),
+            viewport: extent.to_extent().rect(),
             render_pass: manual_new!(render_pass),
             image_views,
             framebuffers,
@@ -654,7 +654,7 @@ impl<I: Instance> Renderer<I> {
             buffer.begin_render_pass_inline(
                 &self.render_pass,
                 &self.framebuffers[i_usize],
-                self.render_area,
+                self.viewport,
                 clear_values.iter(),
             );
             buffer.finish();
@@ -721,7 +721,7 @@ impl<I: Instance> Renderer<I> {
                 let mut encoder = buffer.begin_render_pass_inline(
                     &self.render_pass,
                     &self.framebuffers[i_usize],
-                    self.render_area,
+                    self.viewport,
                     TRIANGLE_CLEAR.iter(),
                 );
                 encoder.bind_graphics_pipeline(&self.graphics_pipeline);
@@ -787,18 +787,23 @@ impl<I: Instance> Renderer<I> {
         }
     }
 
-    pub fn recreate_swapchain(&mut self, new_dimensions: &Coord<f32>) -> Result<(), &'static str> {
-        self.drop_swapchain()?;
-
+    pub fn recreate_swapchain(&mut self, window: &Window) -> Result<(), &'static str> {
         let (caps, formats, _) = self.surface.compatibility(&mut self.adapter.physical_device);
         assert!(formats.iter().any(|fs| fs.contains(&self.format)));
 
         let extent = {
+            let window_client_area = window
+                .get_inner_size()
+                .ok_or("Window doesn't exist!")?
+                .to_physical(window.get_hidpi_factor());
+
             Extent2D {
-                width: new_dimensions.x as u32,
-                height: new_dimensions.y as u32,
+                width: caps.extents.end().width.min(window_client_area.width as u32),
+                height: caps.extents.end().height.min(window_client_area.height as u32),
             }
         };
+
+        self.viewport = extent.to_extent().rect();
 
         let swapchain_config = gfx_hal::window::SwapchainConfig::from_caps(&caps, self.format, extent);
 
@@ -808,59 +813,65 @@ impl<I: Instance> Renderer<I> {
                 .create_swapchain(&mut self.surface, swapchain_config, None)
                 .map_err(|_| "Couldn't recreate the swapchain!")?;
 
-            let (framebuffers, command_pool, command_buffers) = {
-                let image_views = {
-                    backbuffer
-                        .into_iter()
-                        .map(|image| {
-                            self.device
-                                .create_image_view(
-                                    &image,
-                                    ViewKind::D2,
-                                    self.format,
-                                    Swizzle::NO,
-                                    SubresourceRange {
-                                        aspects: Aspects::COLOR,
-                                        levels: 0..1,
-                                        layers: 0..1,
-                                    },
-                                )
-                                .map_err(|_| "Couldn't create the image_view for the image!")
-                        })
-                        .collect::<Result<Vec<_>, &str>>()?
-                };
+            self.drop_swapchain()?;
 
-                let framebuffers = {
-                    image_views
-                        .iter()
-                        .map(|image_view| {
-                            self.device
-                                .create_framebuffer(
-                                    &self.render_pass,
-                                    vec![image_view],
-                                    Extent {
-                                        width: extent.width as u32,
-                                        height: extent.height as u32,
-                                        depth: 1,
-                                    },
-                                )
-                                .map_err(|_| "Failed to create a framebuffer!")
-                        })
-                        .collect::<Result<Vec<_>, &str>>()?
-                };
-
-                let mut command_pool = self
-                    .device
-                    .create_command_pool_typed(&self.queue_group, CommandPoolCreateFlags::RESET_INDIVIDUAL)
-                    .map_err(|_| "Could not create the raw command pool!")?;
-
-                let command_buffers: Vec<CommandBuffer<I::Backend, Graphics, MultiShot, Primary>> = framebuffers
-                    .iter()
-                    .map(|_| command_pool.acquire_command_buffer())
-                    .collect();
-
-                (framebuffers, command_pool, command_buffers)
+            let image_views = {
+                backbuffer
+                    .into_iter()
+                    .map(|image| {
+                        self.device
+                            .create_image_view(
+                                &image,
+                                ViewKind::D2,
+                                self.format,
+                                Swizzle::NO,
+                                SubresourceRange {
+                                    aspects: Aspects::COLOR,
+                                    levels: 0..1,
+                                    layers: 0..1,
+                                },
+                            )
+                            .map_err(|_| "Couldn't create the image_view for the image!")
+                    })
+                    .collect::<Result<Vec<_>, &str>>()?
             };
+
+            let framebuffers = {
+                image_views
+                    .iter()
+                    .map(|image_view| {
+                        self.device
+                            .create_framebuffer(
+                                &self.render_pass,
+                                vec![image_view],
+                                Extent {
+                                    width: extent.width as u32,
+                                    height: extent.height as u32,
+                                    depth: 1,
+                                },
+                            )
+                            .map_err(|_| "Failed to create a framebuffer!")
+                    })
+                    .collect::<Result<Vec<_>, &str>>()?
+            };
+
+            let mut command_pool = self
+                .device
+                .create_command_pool_typed(&self.queue_group, CommandPoolCreateFlags::RESET_INDIVIDUAL)
+                .map_err(|_| "Could not create the raw command pool!")?;
+
+            let command_buffers: Vec<CommandBuffer<I::Backend, Graphics, MultiShot, Primary>> = framebuffers
+                .iter()
+                .map(|_| command_pool.acquire_command_buffer())
+                .collect();
+
+            let (descriptor_set_layouts, descriptor_pool, pipeline_layout, graphics_pipeline) =
+                Self::create_pipeline(&mut self.device, extent, &self.render_pass)?;
+
+            self.descriptor_set_layouts = descriptor_set_layouts;
+            self.descriptor_pool = manual_new!(descriptor_pool);
+            self.pipeline_layout = manual_new!(pipeline_layout);
+            self.graphics_pipeline = manual_new!(graphics_pipeline);
 
             // Finally, we got ourselves a nice and shiny new swapchain!
             self.swapchain = manual_new!(swapchain);
@@ -881,6 +892,14 @@ impl<I: Instance> Renderer<I> {
             }
             self.device
                 .destroy_command_pool(manual_drop!(self.command_pool).into_raw());
+
+            for this_layout in self.descriptor_set_layouts.drain(..) {
+                self.device.destroy_descriptor_set_layout(this_layout);
+            }
+            self.device.destroy_descriptor_pool(manual_drop!(self.descriptor_pool));
+            self.device.destroy_pipeline_layout(manual_drop!(self.pipeline_layout));
+            self.device
+                .destroy_graphics_pipeline(manual_drop!(self.graphics_pipeline));
 
             self.device.destroy_swapchain(manual_drop!(self.swapchain));
         }
@@ -933,7 +952,7 @@ impl<I: Instance> core::ops::Drop for Renderer<I> {
             self.device.destroy_descriptor_pool(manual_drop!(self.descriptor_pool));
 
             ManuallyDrop::drop(&mut self.device);
-            ManuallyDrop::drop(&mut self._instance);
+            ManuallyDrop::drop(&mut self.instance);
         }
     }
 }

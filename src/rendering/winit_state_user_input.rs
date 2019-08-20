@@ -54,8 +54,7 @@ impl UserInput {
     pub fn poll_events_loop(&mut self, events_loop: &mut EventsLoop, last_timestamp: &mut Instant) {
         // Save our Pressed last frame...
         let last_frame_pressed = self.pressed.clone();
-        self.pressed.clear();
-        self.released.clear();
+        self.clear_input();
 
         events_loop.poll_events(|event| match event {
             Event::WindowEvent {
@@ -143,5 +142,14 @@ impl UserInput {
                 }
             }
         }
+    }
+
+    fn clear_input(&mut self) {
+        self.pressed.clear();
+        self.released.clear();
+
+        self.end_requested = false;
+        self.new_frame_size = None;
+        self.new_mouse_position = None;
     }
 }

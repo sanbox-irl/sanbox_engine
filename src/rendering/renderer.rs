@@ -736,7 +736,7 @@ impl<I: Instance> Renderer<I> {
 
                 for entity in entities {
                     let mvp = {
-                        let temp = view_projection;
+                        let temp = view_projection * entity.position;
                         entity
                             .sprite
                             .scale_by_sprite(&temp, Origin::new(OriginHorizontal::Center, OriginVertical::Center))
